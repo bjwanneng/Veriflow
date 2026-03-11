@@ -1,0 +1,121 @@
+# VeriFlow-Agent 3.0: Example Timing Scenario
+# Scenario: FIFO Write Burst
+# This demonstrates the YAML DSL for Stage 2 - Virtual Timing Modeling
+
+scenario_id: "fifo_write_burst_001"
+scenario: "FIFO_Write_Burst"
+description: "Test scenario for FIFO write operations with burst transfers. Verifies full flag behavior and backpressure handling."
+
+parameters:
+  DEPTH: 4
+  DATA_WIDTH: 32
+  ADDR_WIDTH: 4
+
+clocks:
+  clk:
+    period: "5ns"  # 200MHz
+    duty_cycle: 50
+  clk_bus:
+    period: "10ns"  # 100MHz
+    duty_cycle: 50
+
+phases:
+  - name: "Reset_Phase"
+    duration_ns: 50
+    signals:
+      rst_n: 0
+      wr_en: 0
+      rd_en: 0
+      wr_data: 0
+    assertions:
+      - expression: "full == 0"
+        type: "immediate"
+        description: "FIFO should be empty after reset"
+        severity: "error"
+      - expression: "empty == 1"
+        type: "immediate"
+        description: "FIFO should signal empty after reset"
+        severity: "error"
+    description: "Apply reset and wait for FIFO to initialize"
+
+  - name: "Write_Phase"
+    duration_ns: 20  # Per iteration
+    repeat:
+      count: "$DEPTH"
+      var: "i"
+    signals:
+      rst_n: 1
+      wr_en: 1
+      wr_data: "$i * 2"
+      rd_en: 0
+    assertions:
+      - expression: "full == 0 until i == $DEPTH-1"
+        type: "delayed"
+        description: "Full flag should remain low until last write"
+        severity: "error"
+      - expression: "wr_en |-> ##[1:3] full"
+        type: "delayed"
+        min_delay: 1
+        max_delay: 3
+        description: "Full flag responds within 3 cycles of write enable"
+        severity: "warning"
+    description: "Write burst operation filling FIFO to capacity"
+
+  - name: "Backpressure_Phase"
+    duration_ns: 30
+    signals:
+      rst_n: 1
+      wr_en: 1  # Attempt to write when full
+      rd_en: 0
+    assertions:
+      - expression: "full == 1"
+        type: "immediate"
+        description: "FIFO should signal full condition"
+        severity: "error"
+      - expression: "wr_en & full |-> overflow == 0"
+        type: "immediate"
+        description: "Overflow protection should prevent data corruption"
+        severity: "error"
+    description: "Verify backpressure handling when FIFO is full"
+
+  - name: "Read_Phase"
+    duration_ns: 20
+    repeat:
+      count: "$DEPTH"
+      var: "j"
+    signals:
+      rst_n: 1
+      wr_en: 0
+      rd_en: 1
+    assertions:
+      - expression: "rd_data == $j * 2"
+        type: "immediate"
+        description: "Read data should match written data"
+        severity: "error"
+      - expression: "empty == 0 until j == $DEPTH-1"
+        type: "delayed"
+        description: "Empty flag should remain low until last read"
+        severity: "warning"
+    description: "Read burst to empty the FIFO"
+
+global_assertions:
+  - expression: "$rose(rst_n) |-> ##[1:10] (full == 0 & empty == 1)"
+    type: "delayed"
+    min_delay: 1
+    max_delay: 10
+    description: "After reset deassertion, FIFO reaches steady state within 10 cycles"
+    severity: "error"
+  - expression: "not (wr_en & rd_en & full)"
+    type: "immediate"
+    description: "Simultaneous write and read when full should be handled carefully"
+    severity: "warning"
+
+# Metadata for tracing and debugging
+metadata:
+  version: "1.0"
+  generated_by: "VeriFlow-Agent 3.0"
+  generation_timestamp: "2024-01-15T10:30:00Z"
+  intended_use: "FIFO write burst validation with backpressure testing"
+  related_specs:
+    - "micro_arch_spec.json"
+    - "interface_protocol.yaml"

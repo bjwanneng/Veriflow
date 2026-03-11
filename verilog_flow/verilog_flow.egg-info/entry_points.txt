@@ -1,0 +1,5 @@
+[console_scripts]
+verilog-flow = verilog_flow.cli.main:main
+vf-codegen = verilog_flow.cli.codegen:main
+vf-sim = verilog_flow.cli.simulate:main
+vf-synth = verilog_flow.cli.synthesize:main
