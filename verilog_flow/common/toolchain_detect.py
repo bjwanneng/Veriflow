@@ -85,7 +85,7 @@ def detect_toolchain() -> ToolchainEnv:
 
     # Detect individual tools
     env = result.shell_env()
-    for tool_name in ("iverilog", "vvp", "yosys"):
+    for tool_name in ("iverilog", "vvp", "yosys", "verilator", "verible-verilog-lint"):
         info = _detect_tool(tool_name, env)
         result.tools[tool_name] = info
         if not info.available:
@@ -137,6 +137,14 @@ def _detect_tool(name: str, env: Dict[str, str]) -> ToolInfo:
             r = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=5, env=env)
             if r.stdout:
                 info.version = r.stdout.split('\n')[0].strip()
+        elif name == "verilator":
+            r = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=5, env=env)
+            if r.stdout:
+                info.version = r.stdout.strip()
+        elif name == "verible-verilog-lint":
+            r = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=5, env=env)
+            if r.stdout:
+                info.version = r.stdout.strip()
     except (subprocess.TimeoutExpired, OSError):
         pass
 

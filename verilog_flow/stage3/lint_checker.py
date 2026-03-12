@@ -109,6 +109,78 @@ class LintChecker:
         verilog_code = file_path.read_text(encoding='utf-8')
         return self.check(verilog_code, str(file_path))
 
+    def check_file_deep(self, file_path: Path,
+                        top_module: Optional[str] = None) -> LintResult:
+        """Two-layer lint: Python regex rules + Verilator --lint-only.
+
+        Layer 1 (always runs): Built-in 16 regex-based rules
+        Layer 2 (if Verilator installed): verilator --lint-only for deep analysis
+            - bit-width mismatch, unused signals, combinational loops, etc.
+
+        If Verilator is not installed, Layer 2 is skipped with an info notice.
+        Results from both layers are merged into a single LintResult.
+        """
+        # Layer 1: Python regex lint
+        result = self.check_file(file_path)
+        if not result.passed:
+            # If Layer 1 has errors, still run Layer 2 for completeness
+            pass
+
+        # Layer 2: Verilator deep lint
+        from .verilator_lint import VerilatorLint
+        vlint = VerilatorLint()
+        vlint_result = vlint.check_file(file_path, top_module=top_module)
+        result.issues.extend(vlint_result.issues)
+
+        return result
+
+    def check_files_deep(self, file_paths: List[Path],
+                         top_module: Optional[str] = None) -> List[LintResult]:
+        """Run two-layer lint on multiple files.
+
+        Layer 1: Per-file Python regex lint
+        Layer 2: All files together through Verilator (for cross-module checks)
+        """
+        results = []
+
+        # Layer 1: per-file regex lint
+        for fp in file_paths:
+            results.append(self.check_file(fp))
+
+        # Layer 2: Verilator on all files together
+        from .verilator_lint import VerilatorLint
+        vlint = VerilatorLint()
+        if vlint.available:
+            existing_files = [fp for fp in file_paths if fp.exists()]
+            if existing_files:
+                vlint_result = vlint.check_files(existing_files, top_module=top_module)
+                # Distribute Verilator issues to matching per-file results
+                for issue in vlint_result.issues:
+                    distributed = False
+                    for r in results:
+                        if issue.rule_id == 'VERILATOR_NOT_FOUND':
+                            break
+                        # Match by filename in the issue message or file_path
+                        if r.file_path and Path(r.file_path).name in (issue.suggestion or ""):
+                            r.issues.append(issue)
+                            distributed = True
+                            break
+                    if not distributed and results:
+                        # Append to first result as fallback
+                        results[0].issues.append(issue)
+        else:
+            # Add info notice to first result
+            if results:
+                results[0].issues.append(LintIssue(
+                    severity='info',
+                    rule_id='VERILATOR_NOT_FOUND',
+                    message='Verilator not installed — deep lint skipped',
+                    line_number=0,
+                    suggestion='Install Verilator for bit-width, unused signal, and loop detection',
+                ))
+
+        return results
+
     def _check_module_declaration(self, code: str) -> List[LintIssue]:
         """Check for proper module declaration."""
         issues = []

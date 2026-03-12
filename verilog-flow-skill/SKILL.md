@@ -22,7 +22,9 @@ You MUST complete them IN ORDER. You MUST NOT jump from Stage 1 to Stage 3.
 You MUST NOT jump from Stage 3 to Stage 5.
 
 ### Rule 2: ALWAYS run lint before simulation
-Before entering Stage 4 (simulation), you MUST run `LintChecker.check()` on ALL generated .v files.
+Before entering Stage 4 (simulation), you MUST run lint on ALL generated .v files.
+Preferred: `LintChecker.check_file_deep()` (two-layer: Python regex + Verilator --lint-only)
+Minimum: `LintChecker.check_file()` (Python regex only, if Verilator not installed)
 If any lint issue has severity="error", you MUST fix it before proceeding.
 Do NOT ignore lint errors. Do NOT skip lint.
 
@@ -171,7 +173,7 @@ trace.save("golden_trace.json")
 html = generate_wavedrom(scenario, output_path="waveform.html")
 ```
 
-### Stage 3: Code Generation with Lint Check
+### Stage 3: Code Generation with Two-Layer Lint
 
 ```python
 from verilog_flow import RTLCodeGenerator, ProjectLayout, CodingStyleManager
@@ -184,17 +186,33 @@ generator = RTLCodeGenerator(coding_style=style)
 module = generator.generate_fifo(depth=16, data_width=32)
 module.save(layout.get_dir(3, "rtl"))
 
-# MANDATORY: Run lint on ALL generated files before proceeding to Stage 4
+# MANDATORY: Two-layer lint before proceeding to Stage 4
+#   Layer 1: Built-in 16 regex rules (always runs)
+#   Layer 2: Verilator --lint-only for deep analysis (if installed)
 linter = LintChecker()
-for vfile in layout.get_dir(3, "rtl").rglob("*.v"):
-    result = linter.check_file(vfile)
+rtl_files = list(layout.get_dir(3, "rtl").rglob("*.v"))
+
+# Option A: Per-file deep lint (Layer 1 + Layer 2 per file)
+for vfile in rtl_files:
+    result = linter.check_file_deep(vfile, top_module="sync_fifo")
     if not result.passed:
         print(f"LINT ERRORS in {vfile}:")
         for issue in result.issues:
             print(f"  [{issue.severity}] {issue.rule_id}: {issue.message} (line {issue.line_number})")
         raise RuntimeError(f"Lint failed for {vfile} — fix errors before Stage 4")
     print(f"  PASS: {vfile} ({result.warning_count} warnings)")
+
+# Option B: All files together (better for cross-module checks)
+results = linter.check_files_deep(rtl_files, top_module="sync_fifo")
+for r in results:
+    if not r.passed:
+        raise RuntimeError(f"Lint failed for {r.file_path}")
 ```
+
+**Two-layer lint architecture:**
+- Layer 1 (Python regex, always available): REG_DRIVEN_BY_ASSIGN, FORWARD_REFERENCE, NBA_AS_COMBINATIONAL, MULTI_DRIVER_CONFLICT, AXIS_HANDSHAKE_PULSE, and 11 more rules
+- Layer 2 (Verilator, optional but recommended): bit-width mismatch (-Wwidth), unused signals (-Wunused), combinational loops (-Wcircular), implicit declarations, incomplete case coverage
+- If Verilator is not installed, Layer 2 is skipped with an info notice — it does NOT block the workflow
 
 ### Stage 4: Physical Simulation & Verification
 
@@ -371,6 +389,26 @@ assert result.fully_approved
 ```
 
 Approval records are persisted to `.veriflow/approvals/` for audit trail.
+
+### Two-Layer Lint with Verilator (`stage3/verilator_lint.py`)
+
+New `check_file_deep()` and `check_files_deep()` methods on `LintChecker`:
+- Layer 1: Built-in 16 Python regex rules (always available)
+- Layer 2: `verilator --lint-only -Wall` for deep static analysis (optional)
+
+Verilator catches issues that regex cannot:
+| Verilator Warning | What it catches |
+|-------------------|-----------------|
+| `-Wwidth` | Bit-width mismatch in assignments and comparisons |
+| `-Wunused` | Unused signals, ports, parameters |
+| `-Wcircular` | Combinational feedback loops |
+| `-Wcaseincomplete` | Case statements missing branches |
+| `-Wcombdly` | Non-blocking `<=` in combinational blocks |
+| `-Wblkseq` | Blocking `=` in sequential blocks |
+| `-Wmultidriven` | Multiple drivers on same signal |
+| `-Wlatch` | Inferred latches |
+
+If Verilator is not installed, Layer 2 is gracefully skipped with an info notice.
 
 ## Common Errors Quick Reference
 
