@@ -103,6 +103,10 @@ class ExperienceDB:
 
     def save_pattern(self, pattern: DesignPattern) -> str:
         """Save a design pattern to the database."""
+        if not isinstance(pattern, DesignPattern):
+            raise TypeError(
+                f"Expected DesignPattern, got {type(pattern).__name__}. "
+                f"Create with: DesignPattern(pattern_id=..., name=..., ...)")
         pattern_file = self.patterns_dir / f"{pattern.pattern_id}.json"
 
         with open(pattern_file, 'w') as f:
@@ -156,6 +160,10 @@ class ExperienceDB:
 
     def record_failure(self, case: FailureCase) -> str:
         """Record a failure case to the database."""
+        if not isinstance(case, FailureCase):
+            raise TypeError(
+                f"Expected FailureCase, got {type(case).__name__}. "
+                f"Create with: FailureCase(case_id=..., module_name=..., ...)")
         # Generate ID if not provided
         if not case.case_id:
             content = f"{case.module_name}_{case.stage}_{case.failure_type}_{time.time()}"

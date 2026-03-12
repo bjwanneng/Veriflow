@@ -88,6 +88,17 @@ class StageGateChecker:
         Without approval, result.fully_approved will be False even if
         automated checks pass.
         """
+        # ── Input validation (guard against skipping stages) ─────────
+        if from_stage not in self._checkers:
+            raise ValueError(
+                f"Invalid from_stage={from_stage}. Valid stages: {sorted(self._checkers.keys())}")
+        if to_stage not in self._checkers:
+            raise ValueError(
+                f"Invalid to_stage={to_stage}. Valid stages: {sorted(self._checkers.keys())}")
+        if to_stage != from_stage + 1:
+            raise ValueError(
+                f"Cannot skip stages: {from_stage}→{to_stage}. "
+                f"You must transition one stage at a time ({from_stage}→{from_stage + 1}).")
         result = self.check_stage(from_stage)
         if result.errors:
             result.passed = False

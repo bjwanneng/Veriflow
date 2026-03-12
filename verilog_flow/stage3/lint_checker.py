@@ -96,6 +96,16 @@ class LintChecker:
 
     def check_file(self, file_path: Path) -> LintResult:
         """Run lint on a file."""
+        if not file_path.exists():
+            result = LintResult(file_path=str(file_path))
+            result.issues.append(LintIssue(
+                severity='error',
+                rule_id='FILE_NOT_FOUND',
+                message=f'File does not exist: {file_path}',
+                line_number=0,
+                suggestion='Check the file path and ensure the file was generated correctly',
+            ))
+            return result
         verilog_code = file_path.read_text(encoding='utf-8')
         return self.check(verilog_code, str(file_path))
 

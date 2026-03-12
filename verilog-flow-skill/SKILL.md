@@ -12,6 +12,64 @@ metadata:
 
 Industrial-grade Verilog code generation system with timing and micro-architecture awareness.
 
+## MANDATORY WORKFLOW RULES
+
+**These rules are NON-NEGOTIABLE. You MUST follow them exactly. Violating any rule is a critical error.**
+
+### Rule 1: NEVER skip stages
+The workflow has 5 stages: Spec(1) → Timing(2) → Codegen(3) → Sim(4) → Synth(5).
+You MUST complete them IN ORDER. You MUST NOT jump from Stage 1 to Stage 3.
+You MUST NOT jump from Stage 3 to Stage 5.
+
+### Rule 2: ALWAYS run lint before simulation
+Before entering Stage 4 (simulation), you MUST run `LintChecker.check()` on ALL generated .v files.
+If any lint issue has severity="error", you MUST fix it before proceeding.
+Do NOT ignore lint errors. Do NOT skip lint.
+
+### Rule 3: ALWAYS get human approval before stage transition
+Before moving from one stage to the next, you MUST:
+1. Show the user a summary of what was done in the current stage
+2. Show any warnings or issues found
+3. Ask the user to confirm before proceeding
+4. If using the Python API: call `checker.require_manual_approval(from_stage, to_stage)`
+5. If the user says "no" or "stop", you MUST stop immediately
+
+### Rule 4: NEVER generate placeholder code
+All generated Verilog modules MUST be complete, synthesizable implementations.
+Do NOT write `// TODO`, `// placeholder`, or empty module bodies.
+Do NOT use `$display` or `$finish` in synthesizable code (only in testbenches).
+
+### Rule 5: ALWAYS use Verilog-2005 compatible syntax
+- Do NOT use SystemVerilog syntax (logic, interface, always_ff, always_comb)
+- Do NOT declare reg/wire inside unnamed begin...end blocks
+- Do NOT use `reg` for signals driven by `assign` — use `wire`
+- Do NOT use forward references (declare before use)
+
+### Rule 6: ALWAYS check AXI-Stream handshake protocol
+When generating AXI-Stream interfaces:
+- `valid` MUST be held HIGH until `ready` acknowledges (valid && ready)
+- Do NOT pulse `valid` for one cycle without checking `ready`
+- Do NOT deassert `valid` before `ready` is seen
+- `tdata` MUST NOT change while `valid` is high and `ready` is low
+
+### Rule 7: Error recovery
+If iverilog compilation fails:
+1. Read the FULL error message
+2. Check if it matches a known lint rule (REG_DRIVEN_BY_ASSIGN, FORWARD_REFERENCE, etc.)
+3. Fix the root cause — do NOT add workarounds or suppress warnings
+4. Re-run lint, then re-compile
+
+If simulation hangs (no output for >10 seconds):
+1. Check for missing `$finish` in testbench
+2. Check for combinational loops
+3. Use `timeout` wrapper: `timeout 30 vvp sim.vvp`
+
+### Rule 8: Windows toolchain
+On Windows with oss-cad-suite:
+- MUST add BOTH `bin/` AND `lib/` to PATH
+- MUST NOT wrap commands in `cmd.exe /c` — run directly from bash
+- Use `toolchain_detect.detect_toolchain()` to get correct environment
+
 ## Overview
 
 VeriFlow-Agent 3.0 addresses the common problem in Verilog code generation: **"Logically correct, physically failing"**. By adopting a "Shift-Left" philosophy, it brings micro-architecture planning and physical timing estimation to the pre-code-generation phase.
@@ -113,10 +171,11 @@ trace.save("golden_trace.json")
 html = generate_wavedrom(scenario, output_path="waveform.html")
 ```
 
-### Stage 3: Code Generation with Coding Style
+### Stage 3: Code Generation with Lint Check
 
 ```python
 from verilog_flow import RTLCodeGenerator, ProjectLayout, CodingStyleManager
+from verilog_flow.stage3.lint_checker import LintChecker
 from pathlib import Path
 
 layout = ProjectLayout(Path("."))
@@ -124,17 +183,41 @@ style = CodingStyleManager(layout).get_style("xilinx")
 generator = RTLCodeGenerator(coding_style=style)
 module = generator.generate_fifo(depth=16, data_width=32)
 module.save(layout.get_dir(3, "rtl"))
+
+# MANDATORY: Run lint on ALL generated files before proceeding to Stage 4
+linter = LintChecker()
+for vfile in layout.get_dir(3, "rtl").rglob("*.v"):
+    result = linter.check_file(vfile)
+    if not result.passed:
+        print(f"LINT ERRORS in {vfile}:")
+        for issue in result.issues:
+            print(f"  [{issue.severity}] {issue.rule_id}: {issue.message} (line {issue.line_number})")
+        raise RuntimeError(f"Lint failed for {vfile} — fix errors before Stage 4")
+    print(f"  PASS: {vfile} ({result.warning_count} warnings)")
 ```
 
 ### Stage 4: Physical Simulation & Verification
 
 ```python
 from verilog_flow import TestbenchGenerator, TestbenchConfig, SimulationRunner
+from verilog_flow.common.experience_db import ExperienceDB
+
 config = TestbenchConfig(module_name="sync_fifo")
 tb_gen = TestbenchGenerator(config)
-runner = SimulationRunner(simulator="iverilog", output_dir="sim_output")
+
+# Pass experience_db to auto-record results (optional but recommended)
+exp_db = ExperienceDB()
+runner = SimulationRunner(simulator="iverilog", output_dir="sim_output",
+                          experience_db=exp_db)
 result = runner.run(design_files=["rtl/sync_fifo.v"],
                     testbench_file="tb.sv", top_module="tb_sync_fifo")
+
+# MANDATORY: Check result before proceeding
+if not result.success:
+    print(f"SIMULATION FAILED: {result.error}")
+    print("Fix the issue and re-run. Do NOT proceed to Stage 5.")
+else:
+    print(f"PASS: {result.tests_passed} tests, {result.assertions_passed} assertions")
 ```
 
 ### Stage 5: Synthesis-Level Verification
@@ -161,7 +244,9 @@ layout.migrate_legacy()               # Move old flat dirs to new layout
 
 ### CodingStyleManager — Vendor-Specific Coding Rules
 
-Built-in presets: `generic` (async active-low, 4-space), `xilinx` (sync active-high, UG901), `intel` (async active-low, 3-space).
+Built-in presets: `generic` (async active-low rst_n, 4-space), `xilinx` (sync active-high rst, UG901), `intel` (async active-low rst_n, 3-space).
+
+**IMPORTANT**: The vendor preset (Python CodingStyle object) is the authoritative source for reset style, naming, and indentation. The `base_style.md` document is a reference guide based on Xilinx verilog-ethernet conventions — if it conflicts with your chosen vendor preset, the preset wins.
 
 ```python
 from verilog_flow import CodingStyleManager
@@ -174,14 +259,28 @@ templates = mgr.list_templates()         # All available template names
 issues = mgr.validate_code(verilog_code, style)
 ```
 
-### StageGateChecker — Quality Gates
+### StageGateChecker — Quality Gates (Human-in-the-Loop)
+
+Every stage transition requires manual approval. Do NOT skip this step.
 
 ```python
 from verilog_flow import StageGateChecker
 checker = StageGateChecker(layout)
-results = checker.check_all()
-result = checker.check_transition(3, 4)  # Can we move from stage 3 to 4?
+
+# Step 1: Check current stage quality
+result = checker.check_stage(3)
+print(f"Errors: {result.error_count}, Warnings: {result.warning_count}")
+
+# Step 2: Request human approval (MANDATORY before proceeding)
+# Interactive mode — prints summary and asks user for y/N:
+approval = checker.require_manual_approval(3, 4)
+
+# Alternative: programmatic mode with explicit token
+result = checker.check_transition(3, 4, approve_token="approved", approved_by="engineer")
+assert result.fully_approved  # True only if gate passed AND approval given
 ```
+
+**WARNING**: `check_transition()` without `approve_token` will FAIL with APPROVAL_REQUIRED error. This is intentional — every transition needs explicit human sign-off.
 
 ### ExecutionLogger — Structured Run Logs
 
@@ -272,6 +371,21 @@ assert result.fully_approved
 ```
 
 Approval records are persisted to `.veriflow/approvals/` for audit trail.
+
+## Common Errors Quick Reference
+
+If you encounter any of these errors, follow the fix instructions exactly:
+
+| Error Message | Root Cause | Fix |
+|---------------|-----------|-----|
+| `Variable 'X' cannot be driven by continuous assignment` | `reg` driven by `assign` | Change `reg` to `wire` for signal X |
+| `Unable to bind wire/reg/memory 'X'` | Forward reference | Move declaration of X before the line that uses it |
+| `Variable declaration in unnamed block requires SystemVerilog` | `reg` inside unnamed `begin...end` | Move reg declaration to module level, or add a name to the block |
+| `Multiple drivers on signal 'X'` | Signal driven by both `always` and `assign` | Use only ONE driver type: either always (reg) or assign (wire) |
+| Simulation hangs, no output | Missing `$finish`, combinational loop, or deadlock | Add `$finish` to testbench; check for `assign a = b; assign b = a;` loops |
+| `AXIS_HANDSHAKE_PULSE` warning | `valid` cleared without checking `ready` | Hold `valid` high until `ready` acknowledges: `if (valid && ready) valid <= 0;` |
+| Exit code 127 on Windows | Missing DLL path | Add `oss-cad-suite/lib` to PATH alongside `bin` |
+| `APPROVAL_REQUIRED` error | Stage transition without approval | Call `require_manual_approval()` or pass `approve_token` parameter |
 
 ## Troubleshooting
 
