@@ -18,6 +18,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from verilog_flow.stage2 import parse_yaml_scenario, validate_scenario
 from verilog_flow.stage2 import generate_wavedrom, generate_golden_trace
 from verilog_flow.common.kpi import KPITracker
+from verilog_flow.common.project_layout import ProjectLayout
+from verilog_flow.common.coding_style import CodingStyleManager
+from verilog_flow.common.stage_gate import StageGateChecker
+from verilog_flow.common.post_run_analyzer import PostRunAnalyzer
 
 console = Console()
 
@@ -226,6 +230,155 @@ def dashboard(runs: int):
     metrics_table.add_row("Avg Tokens", f"{summary.get('avg_tokens', 0):.0f}")
 
     console.print(metrics_table)
+
+
+@cli.command(name="init")
+@click.option('--vendor', '-V', type=click.Choice(['generic', 'xilinx', 'intel']),
+              default='generic', help='Target vendor for coding style')
+@click.option('--project-dir', '-d', type=click.Path(path_type=Path),
+              default=Path('.'), help='Project root directory')
+@click.pass_context
+def init_project(ctx, vendor: str, project_dir: Path):
+    """Initialize a VeriFlow project directory with standard layout."""
+    verbose = ctx.obj.get('verbose', False)
+    console.print(Panel.fit(f"[bold blue]Initializing VeriFlow project ({vendor})[/]"))
+
+    try:
+        layout = ProjectLayout(project_dir)
+        layout.initialize()
+        console.print("[green]✓[/] Created standard directory layout")
+
+        # Initialize coding style defaults
+        mgr = CodingStyleManager(layout)
+        mgr.initialize_defaults()
+        console.print(f"[green]✓[/] Copied coding style docs & templates for: {', '.join(mgr.list_vendors())}")
+
+        # Attempt legacy migration
+        actions = layout.migrate_legacy()
+        if actions:
+            console.print(f"[green]✓[/] Migrated {len(actions)} items from legacy layout:")
+            for a in actions:
+                console.print(f"  • {a}")
+        else:
+            console.print("[dim]No legacy directories to migrate[/]")
+
+        console.print(f"\n[green]Project initialized at:[/] {layout.root}")
+        return 0
+
+    except Exception as e:
+        console.print(f"[red]Error:[/] {str(e)}")
+        if verbose:
+            import traceback
+            console.print(traceback.format_exc())
+        return 1
+
+
+@cli.command()
+@click.option('--stage', '-s', type=int, default=None, help='Check a specific stage (1-5)')
+@click.option('--project-dir', '-d', type=click.Path(path_type=Path),
+              default=Path('.'), help='Project root directory')
+@click.pass_context
+def check(ctx, stage: Optional[int], project_dir: Path):
+    """Run stage gate quality checks."""
+    verbose = ctx.obj.get('verbose', False)
+    console.print(Panel.fit("[bold blue]VeriFlow Stage Gate Check[/]"))
+
+    try:
+        layout = ProjectLayout(project_dir)
+        checker = StageGateChecker(layout)
+
+        if stage:
+            results = [checker.check_stage(stage)]
+        else:
+            results = checker.check_all()
+
+        # Display results
+        result_table = Table(title="Gate Check Results")
+        result_table.add_column("Stage", style="cyan")
+        result_table.add_column("Status", justify="center")
+        result_table.add_column("Errors", style="red", justify="right")
+        result_table.add_column("Warnings", style="yellow", justify="right")
+        result_table.add_column("Metrics", style="dim")
+
+        all_passed = True
+        for r in results:
+            status = "[green]PASS[/]" if r.passed else "[red]FAIL[/]"
+            if not r.passed:
+                all_passed = False
+            metrics_str = ", ".join(f"{k}={v}" for k, v in r.metrics.items())
+            result_table.add_row(
+                str(r.stage), status,
+                str(len(r.errors)), str(len(r.warnings)),
+                metrics_str)
+
+        console.print(result_table)
+
+        # Show details for failures
+        for r in results:
+            if r.issues:
+                for issue in r.issues:
+                    icon = "[red]✗[/]" if issue.severity == "error" else "[yellow]![/]"
+                    console.print(f"  {icon} Stage {r.stage}: {issue.message}")
+
+        return 0 if all_passed else 1
+
+    except Exception as e:
+        console.print(f"[red]Error:[/] {str(e)}")
+        if verbose:
+            import traceback
+            console.print(traceback.format_exc())
+        return 1
+
+
+@cli.command(name="analyze")
+@click.option('--runs', '-n', default=10, help='Number of recent runs to analyze')
+@click.option('--project-dir', '-d', type=click.Path(path_type=Path),
+              default=Path('.'), help='Project root directory')
+@click.pass_context
+def analyze(ctx, runs: int, project_dir: Path):
+    """Run post-execution analysis for self-evolution insights."""
+    verbose = ctx.obj.get('verbose', False)
+    console.print(Panel.fit("[bold blue]VeriFlow Post-Run Analysis[/]"))
+
+    try:
+        layout = ProjectLayout(project_dir)
+        analyzer = PostRunAnalyzer(layout)
+        report = analyzer.analyze(n_recent=runs)
+
+        console.print(f"Analyzed [cyan]{report.run_count}[/] recent runs\n")
+
+        if not report.insights:
+            console.print("[green]No issues found — pipeline is healthy.[/]")
+            return 0
+
+        # Display insights
+        insight_table = Table(title="Insights")
+        insight_table.add_column("Severity", justify="center")
+        insight_table.add_column("Category", style="cyan")
+        insight_table.add_column("Message")
+
+        for ins in report.insights:
+            sev_style = {"high": "[red]HIGH[/]", "medium": "[yellow]MED[/]",
+                         "low": "[dim]LOW[/]"}.get(ins.severity, ins.severity)
+            insight_table.add_row(sev_style, ins.category, ins.message)
+
+        console.print(insight_table)
+
+        # Stage stats
+        if report.stage_stats:
+            console.print("\n[bold]Stage Performance:[/]")
+            for name, stats in report.stage_stats.items():
+                console.print(f"  {name}: avg {stats['avg_s']}s ({stats['runs']} runs)")
+
+        console.print(f"\n[dim]Full report: {layout.get_reports_dir() / 'post_run_analysis.json'}[/]")
+        return 0
+
+    except Exception as e:
+        console.print(f"[red]Error:[/] {str(e)}")
+        if verbose:
+            import traceback
+            console.print(traceback.format_exc())
+        return 1
 
 
 # Entry point

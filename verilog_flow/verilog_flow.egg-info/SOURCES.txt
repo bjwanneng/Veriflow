@@ -1,8 +1,0 @@
-README.md
-pyproject.toml
-verilog_flow.egg-info/PKG-INFO
-verilog_flow.egg-info/SOURCES.txt
-verilog_flow.egg-info/dependency_links.txt
-verilog_flow.egg-info/entry_points.txt
-verilog_flow.egg-info/requires.txt
-verilog_flow.egg-info/top_level.txt

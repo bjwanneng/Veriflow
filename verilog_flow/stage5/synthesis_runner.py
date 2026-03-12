@@ -104,6 +104,7 @@ class SynthesisRunner:
         top_module: str,
         target_frequency_mhz: float = 100.0,
         target_device: str = "generic",
+        flatten: bool = False,
     ) -> SynthesisResult:
         """Run synthesis on Verilog files."""
 
@@ -117,7 +118,7 @@ class SynthesisRunner:
 
         # Check Yosys availability
         if not self.yosys.available:
-            result.errors.append("Yosys not found. Please install Yosys.")
+            result.errors.append(self.yosys.install_hint())
             return result
 
         # Run synthesis
@@ -127,6 +128,7 @@ class SynthesisRunner:
                 top_module=top_module,
                 target=target_device,
                 output_dir=self.output_dir,
+                flatten=flatten,
             )
 
             # Populate result
@@ -135,11 +137,35 @@ class SynthesisRunner:
 
             # Extract cell counts
             cells = synth_output.get("cells", {})
-            result.cell_count = sum(cells.values())
-            result.lut_count = cells.get("$lut", 0)
-            result.flip_flop_count = cells.get("$dff", 0) + cells.get("$dffe", 0)
-            result.bram_count = cells.get("$mem", 0)
-            result.dsp_count = cells.get("$mul", 0) + cells.get("$div", 0)
+
+            # Use stat summary line for total cell count (more reliable than sum)
+            result.cell_count = synth_output.get("cell_count_total", 0)
+            if result.cell_count == 0:
+                result.cell_count = sum(cells.values())
+
+            # FF: match all cell types containing DFF/dff (covers $_DFF_P_, $_DFFE_PP_, $dff, etc.)
+            result.flip_flop_count = sum(
+                cnt for name, cnt in cells.items()
+                if 'dff' in name.lower() or 'sdff' in name.lower()
+            )
+
+            # LUT: match $lut and gate-level primitives
+            result.lut_count = sum(
+                cnt for name, cnt in cells.items()
+                if 'lut' in name.lower() or name.lower() in (
+                    '$_and_', '$_or_', '$_xor_', '$_not_', '$_mux_',
+                    '$_nand_', '$_nor_', '$_xnor_', '$_aoi3_', '$_oai3_',
+                )
+            )
+
+            result.bram_count = sum(
+                cnt for name, cnt in cells.items()
+                if 'mem' in name.lower()
+            )
+            result.dsp_count = sum(
+                cnt for name, cnt in cells.items()
+                if name.lower() in ('$mul', '$div', '$_mul_', '$_div_')
+            )
 
             # Estimate timing
             result.estimated_max_frequency_mhz = self.yosys.estimate_max_frequency(

@@ -1,5 +1,7 @@
 """Yosys Interface for Stage 5."""
 
+import os
+import platform
 import subprocess
 import tempfile
 from pathlib import Path
@@ -13,31 +15,95 @@ class YosysInterface:
         self.available = self._check_yosys()
 
     def _check_yosys(self) -> bool:
-        """Check if Yosys is available."""
+        """Check if Yosys is available, with oss-cad-suite auto-detection."""
+        # Try direct invocation first
+        if self._try_yosys():
+            return True
+
+        # Auto-detect oss-cad-suite in common locations
+        candidates = []
+        yosyshq_root = os.environ.get("YOSYSHQ_ROOT")
+        if yosyshq_root:
+            candidates.append(Path(yosyshq_root))
+
+        system = platform.system()
+        home = Path.home()
+        if system == "Windows":
+            candidates += [
+                Path("C:/oss-cad-suite"),
+                home / "oss-cad-suite",
+            ]
+        else:
+            candidates += [
+                home / "oss-cad-suite",
+                Path("/opt/oss-cad-suite"),
+            ]
+
+        for base in candidates:
+            bin_dir = base / "bin"
+            lib_dir = base / "lib"
+            if bin_dir.is_dir():
+                os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
+                if lib_dir.is_dir():
+                    os.environ["PATH"] = str(lib_dir) + os.pathsep + os.environ["PATH"]
+                if self._try_yosys():
+                    return True
+
+        return False
+
+    @staticmethod
+    def _try_yosys() -> bool:
+        """Attempt to run yosys -V."""
         try:
             result = subprocess.run(
                 ["yosys", "-V"],
                 capture_output=True,
                 text=True,
-                timeout=10
+                timeout=10,
             )
             return result.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
+
+    @staticmethod
+    def install_hint() -> str:
+        """Return platform-specific Yosys installation instructions."""
+        system = platform.system()
+        if system == "Windows":
+            return (
+                "Yosys not found. Install oss-cad-suite:\n"
+                "  1. Download from https://github.com/YosysHQ/oss-cad-suite-build/releases\n"
+                "  2. Extract to C:\\oss-cad-suite\n"
+                "  3. Add C:\\oss-cad-suite\\bin to PATH, or set YOSYSHQ_ROOT=C:\\oss-cad-suite"
+            )
+        elif system == "Darwin":
+            return (
+                "Yosys not found. Install via Homebrew:\n"
+                "  brew install yosys\n"
+                "Or download oss-cad-suite from https://github.com/YosysHQ/oss-cad-suite-build/releases"
+            )
+        else:
+            return (
+                "Yosys not found. Install via package manager:\n"
+                "  sudo apt-get install yosys   # Debian/Ubuntu\n"
+                "  sudo dnf install yosys       # Fedora\n"
+                "Or download oss-cad-suite from https://github.com/YosysHQ/oss-cad-suite-build/releases"
+            )
 
     def synthesize(
         self,
         verilog_files: List[Path],
         top_module: str,
         target: str = "generic",
-        output_dir: Optional[Path] = None
+        output_dir: Optional[Path] = None,
+        flatten: bool = False,
     ) -> Dict[str, Any]:
         """Synthesize design using Yosys."""
 
         if not self.available:
             return {
                 "success": False,
-                "error": "Yosys not found. Please install Yosys."
+                "error": self.install_hint(),
             }
 
         if output_dir is None:
@@ -46,7 +112,7 @@ class YosysInterface:
 
         # Generate Yosys script
         script_path = output_dir / "synth.ys"
-        self._generate_script(script_path, verilog_files, top_module, target, output_dir)
+        self._generate_script(script_path, verilog_files, top_module, target, output_dir, flatten=flatten)
 
         try:
             # Run Yosys
@@ -58,10 +124,12 @@ class YosysInterface:
             )
 
             # Parse output
-            synthesis_result = self._parse_output(result.stdout + result.stderr)
+            raw_output = result.stdout + result.stderr
+            synthesis_result = self._parse_output(raw_output)
             synthesis_result["success"] = result.returncode == 0
             synthesis_result["return_code"] = result.returncode
             synthesis_result["output_dir"] = str(output_dir)
+            synthesis_result["raw_output"] = raw_output
 
             return synthesis_result
 
@@ -82,7 +150,8 @@ class YosysInterface:
         verilog_files: List[Path],
         top_module: str,
         target: str,
-        output_dir: Path
+        output_dir: Path,
+        flatten: bool = False,
     ) -> None:
         """Generate Yosys synthesis script."""
 
@@ -128,6 +197,13 @@ class YosysInterface:
 
         lines.append("")
 
+        # Optionally flatten hierarchy before stat
+        if flatten:
+            lines.append("# Flatten hierarchy")
+            lines.append("flatten")
+            lines.append("opt")
+            lines.append("")
+
         # Statistics
         lines.append("# Collect statistics")
         lines.append("stat")
@@ -141,22 +217,37 @@ class YosysInterface:
         script_path.write_text("\n".join(lines), encoding="utf-8")
 
     def _parse_output(self, output: str) -> Dict[str, Any]:
-        """Parse Yosys output for statistics."""
+        """Parse Yosys output for statistics.
 
-        result = {
+        Yosys stat output format (after techmap):
+            === <module> ===
+               Number of wires:                 42
+               Number of wire bits:            512
+               Number of memories:               0
+               Number of memory bits:            0
+               Number of processes:              0
+               Number of cells:                 85
+                 $_AND_                          20
+                 $_DFFE_PP_                      32
+                 $_MUX_                          33
+        """
+        import re
+
+        result: Dict[str, Any] = {
             "cells": {},
             "wires": 0,
             "wire_bits": 0,
-            "processes": 0,
             "memories": 0,
             "memory_bits": 0,
+            "processes": 0,
+            "cell_count_total": 0,
         }
 
-        # Parse statistics
-        import re
+        # Summary line pattern: "Number of <thing>:  <count>"
+        summary_pattern = re.compile(r'Number of (\w[\w\s]*\w)\s*:\s*(\d+)')
+        # Cell line pattern: "  $_AND_   20"  or "  $lut   5"
+        cell_pattern = re.compile(r'^\s+(\$\S+)\s+(\d+)\s*$')
 
-        # Look for cell counts
-        cell_pattern = r'(\w+)\s+(\d+)'
         in_stat_section = False
 
         for line in output.split('\n'):
@@ -164,14 +255,39 @@ class YosysInterface:
                 in_stat_section = True
                 continue
 
-            if in_stat_section:
-                match = re.match(cell_pattern, line.strip())
-                if match:
-                    cell_type = match.group(1)
-                    count = int(match.group(2))
-                    if cell_type in ['Number', 'Area']:
-                        continue
-                    result["cells"][cell_type] = count
+            if not in_stat_section:
+                continue
+
+            # Blank line after stat section ends it
+            stripped = line.strip()
+            if not stripped:
+                continue
+
+            # Try summary lines first
+            sm = summary_pattern.search(line)
+            if sm:
+                key = sm.group(1).strip().lower().replace(' ', '_')
+                val = int(sm.group(2))
+                if key == 'wires':
+                    result['wires'] = val
+                elif key == 'wire_bits':
+                    result['wire_bits'] = val
+                elif key == 'memories':
+                    result['memories'] = val
+                elif key == 'memory_bits':
+                    result['memory_bits'] = val
+                elif key == 'processes':
+                    result['processes'] = val
+                elif key == 'cells':
+                    result['cell_count_total'] = val
+                continue
+
+            # Try cell type lines
+            cm = cell_pattern.match(line)
+            if cm:
+                cell_type = cm.group(1)
+                count = int(cm.group(2))
+                result['cells'][cell_type] = count
 
         return result
 
@@ -180,23 +296,29 @@ class YosysInterface:
         return sum(synthesis_result.get("cells", {}).values())
 
     def estimate_max_frequency(self, synthesis_result: Dict[str, Any]) -> float:
-        """Estimate maximum frequency based on cell types."""
-        # This is a rough estimation based on cell counts
-        # Real timing analysis requires STA tools
+        """Estimate maximum frequency based on cell types.
 
+        Handles both pre-techmap ($lut, $dff) and post-techmap ($_AND_, $_DFFE_PP_) names.
+        """
         cells = synthesis_result.get("cells", {})
 
-        # Count critical path elements
-        lut_count = cells.get('$lut', 0)
-        dff_count = cells.get('$dff', 0) + cells.get('$dffe', 0)
-        carry_count = cells.get('$alu', 0)
+        # Count LUT-like cells (pre- and post-techmap)
+        lut_count = 0
+        dff_count = 0
+        carry_count = 0
+        for name, cnt in cells.items():
+            nl = name.lower()
+            if 'lut' in nl or nl in ('$_and_', '$_or_', '$_xor_', '$_not_', '$_mux_',
+                                      '$_nand_', '$_nor_', '$_xnor_', '$_aoi3_', '$_oai3_'):
+                lut_count += cnt
+            elif 'dff' in nl or 'sdff' in nl:
+                dff_count += cnt
+            elif 'alu' in nl or 'carry' in nl:
+                carry_count += cnt
 
-        # Rough estimation: assume 500ps per LUT level, 100ps per DFF
-        # This is very approximate and technology-dependent
         if lut_count > 0:
-            # Estimate critical path through LUT chain
             lut_delay_ns = lut_count * 0.5
             estimated_fmax_mhz = 1000.0 / lut_delay_ns
-            return min(estimated_fmax_mhz, 500.0)  # Cap at 500MHz
+            return min(estimated_fmax_mhz, 500.0)
 
-        return 100.0  # Default 100MHz if no logic
+        return 100.0

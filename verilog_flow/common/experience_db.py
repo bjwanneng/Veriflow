@@ -25,7 +25,7 @@ class DesignPattern:
 
     # Metadata
     success_count: int = 0
-    created_at: str = field(default_factory=lambda: datetime.datetime.now().isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     tags: List[str] = field(default_factory=list)
 
 
@@ -51,7 +51,7 @@ class FailureCase:
     resolution_notes: Optional[str] = None
 
     # Metadata
-    created_at: str = field(default_factory=lambda: datetime.datetime.now().isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     run_id: Optional[str] = None
 
 

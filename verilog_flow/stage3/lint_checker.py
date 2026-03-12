@@ -74,6 +74,8 @@ class LintChecker:
             self._check_naming_conventions,
             self._check_magic_numbers,
             self._check_inferred_latches,
+            self._check_multi_driver_reset,
+            self._check_unpacked_array_port,
         ]
 
     def check(self, verilog_code: str, file_path: str = "<unknown>") -> LintResult:
@@ -345,5 +347,84 @@ class LintChecker:
                         line_number=line_number,
                         suggestion='Add else clause or ensure all outputs assigned in all branches'
                     ))
+
+        return issues
+
+    def _check_multi_driver_reset(self, code: str) -> List[LintIssue]:
+        """Check for multiple top-level reset branches in a single always block.
+
+        Detects patterns like:
+            always @(posedge clk or negedge rst_n) begin
+                if (!rst_n) ...
+                if (!rst_n) ...   // second reset branch — likely multi-driver bug
+            end
+        """
+        issues = []
+
+        # Match clocked always blocks with async reset
+        block_pattern = re.compile(
+            r'always\s*@\s*\([^)]*(?:posedge|negedge)\s+\w+[^)]*(?:or|,)[^)]*(?:posedge|negedge)\s+(\w+)[^)]*\)',
+            re.IGNORECASE,
+        )
+
+        for block_match in block_pattern.finditer(code):
+            reset_sig = block_match.group(1)
+            block_start = block_match.end()
+
+            # Find the extent of this always block (up to next always/endmodule)
+            rest = code[block_start:]
+            block_end_match = re.search(r'\b(?:always\b|endmodule\b)', rest)
+            block_body = rest[:block_end_match.start()] if block_end_match else rest
+
+            # Count top-level `if (!rst_n)` or `if (rst_n == 0)` occurrences
+            reset_if_pattern = re.compile(
+                rf'(?:^|\n)\s*if\s*\(\s*!{re.escape(reset_sig)}\s*\)'
+                rf'|(?:^|\n)\s*if\s*\(\s*{re.escape(reset_sig)}\s*==\s*[01]\s*\)',
+                re.IGNORECASE,
+            )
+            reset_ifs = list(reset_if_pattern.finditer(block_body))
+
+            if len(reset_ifs) > 1:
+                abs_pos = block_start + reset_ifs[1].start()
+                line_number = code[:abs_pos].count('\n') + 1
+                issues.append(LintIssue(
+                    severity='error',
+                    rule_id='MULTI_RESET_BRANCH',
+                    message=f'Multiple top-level reset branches for "{reset_sig}" in one always block',
+                    line_number=line_number,
+                    suggestion='Merge reset logic into a single if/else-if chain to avoid multi-driver conflicts',
+                ))
+
+        return issues
+
+    def _check_unpacked_array_port(self, code: str) -> List[LintIssue]:
+        """Check for unpacked array port declarations (Yosys-incompatible).
+
+        Detects patterns like:
+            input [127:0] data [0:9]
+            output [7:0] result [3:0]
+        """
+        issues = []
+
+        # Pattern: direction [packed_range] name [unpacked_range]
+        pattern = re.compile(
+            r'\b(input|output|inout)\s+'
+            r'(?:reg\s+|wire\s+)?'
+            r'\[\s*\d+\s*:\s*\d+\s*\]\s+'
+            r'(\w+)\s*'
+            r'\[\s*\d+\s*:\s*\d+\s*\]',
+            re.IGNORECASE,
+        )
+
+        for match in pattern.finditer(code):
+            line_number = code[:match.start()].count('\n') + 1
+            port_name = match.group(2)
+            issues.append(LintIssue(
+                severity='warning',
+                rule_id='UNPACKED_ARRAY_PORT',
+                message=f'Unpacked array port "{port_name}" is not supported by Yosys',
+                line_number=line_number,
+                suggestion='Use a flat bus instead: [N*W-1:0] name',
+            ))
 
         return issues

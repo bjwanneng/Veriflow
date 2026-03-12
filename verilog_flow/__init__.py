@@ -9,6 +9,11 @@ __author__ = "VeriFlow Team"
 # Common utilities
 from .common.kpi import KPITracker
 from .common.experience_db import ExperienceDB
+from .common.project_layout import ProjectLayout
+from .common.coding_style import CodingStyle, CodingStyleManager
+from .common.stage_gate import StageGateChecker
+from .common.execution_log import ExecutionLogger
+from .common.post_run_analyzer import PostRunAnalyzer
 
 # Stage 1: Micro-architecture specification
 from .stage1.spec_generator import (
@@ -60,6 +65,12 @@ __all__ = [
     # Common
     "KPITracker",
     "ExperienceDB",
+    "ProjectLayout",
+    "CodingStyle",
+    "CodingStyleManager",
+    "StageGateChecker",
+    "ExecutionLogger",
+    "PostRunAnalyzer",
     # Stage 1
     "MicroArchSpec",
     "SpecGenerator",
