@@ -80,9 +80,8 @@ class VerilatorLint:
             ))
             return result
 
-        # Build command
+        # Build command — use detected path (verilator_bin.exe on Windows)
         cmd = [self.verilator_path, "--lint-only"]
-        cmd.append(f"--language {self.config.language}")
         cmd.extend(self.config.extra_flags)
         cmd.extend(self.config.suppress_flags)
 
@@ -144,27 +143,36 @@ class VerilatorLint:
     def _parse_output(self, output: str) -> List[LintIssue]:
         """Parse Verilator stderr output into LintIssue list.
 
-        Verilator output format:
-            %Warning-UNUSED: file.v:10:5: Signal is not used: 'foo'
+        Verilator 5.x output format:
+            %Warning-WIDTHTRUNC: file.v:6:16: Operator ASSIGNW expects 4 bits ...
+            %Warning-UNUSEDSIGNAL: file.v:2:16: Signal is not used: 'clk'
             %Error: file.v:20:3: Cannot find: 'bar'
-            %Warning-WIDTH: file.v:30:10: Operator ASSIGN expects 8 bits ...
+            %Error: Exiting due to N warning(s)
         """
         issues = []
-        # Pattern: %Warning-TAG: file:line:col: message
-        #      or: %Error: file:line:col: message
+        # Pattern: %Error or %Warning-TAG: file:line:col: message
         pattern = re.compile(
-            r'%(Error|Warning)(?:-(\w+))?:\s*'  # severity + optional tag
-            r'([^:]+):(\d+):(?:(\d+):)?\s*'     # file:line:col (col optional)
-            r'(.+)'                               # message
+            r'%(Error|Warning)(?:-(\w+))?:\s*'   # severity + optional tag
+            r'(\S+?):(\d+):(?:(\d+):)?\s*'       # file:line[:col]:
+            r'(.+)'                                # message
         )
 
+        seen = set()  # deduplicate
         for line in output.split('\n'):
-            m = pattern.match(line.strip())
+            line = line.strip()
+            # Skip continuation lines (start with spaces or "...")
+            if not line.startswith('%'):
+                continue
+            # Skip "Exiting due to" summary line
+            if 'Exiting due to' in line:
+                continue
+
+            m = pattern.match(line)
             if not m:
                 continue
 
-            sev_str = m.group(1)  # "Error" or "Warning"
-            tag = m.group(2) or ""  # e.g., "UNUSED", "WIDTH", ""
+            sev_str = m.group(1)
+            tag = m.group(2) or ""
             file_name = m.group(3)
             line_num = int(m.group(4))
             col = int(m.group(5)) if m.group(5) else 0
@@ -173,10 +181,16 @@ class VerilatorLint:
             severity = "error" if sev_str == "Error" else "warning"
             rule_id = f"VERILATOR_{tag}" if tag else "VERILATOR_ERROR"
 
+            # Deduplicate (same file+line+tag)
+            key = (file_name, line_num, tag)
+            if key in seen:
+                continue
+            seen.add(key)
+
             issues.append(LintIssue(
                 severity=severity,
                 rule_id=rule_id,
-                message=message,
+                message=f'{message} [{file_name}]',
                 line_number=line_num,
                 column=col,
                 suggestion=_suggest_fix(tag, message),

@@ -58,6 +58,10 @@ class ToolchainEnv:
         prefix = self.path_prefix
         if prefix:
             env["PATH"] = prefix + os.pathsep + env.get("PATH", "")
+        # Forward any extra env vars (e.g., VERILATOR_ROOT)
+        for k, v in self.env_vars.items():
+            if k != "PATH_PREFIX":
+                env[k] = v
         return env
 
 
@@ -85,8 +89,23 @@ def detect_toolchain() -> ToolchainEnv:
 
     # Detect individual tools
     env = result.shell_env()
+
+    # Verilator on Windows (oss-cad-suite): Perl wrapper is broken,
+    # use verilator_bin.exe directly + set VERILATOR_ROOT
+    if system == "Windows" and oss_root:
+        share_dir = os.path.join(oss_root, "share", "verilator")
+        if os.path.isdir(share_dir):
+            result.env_vars["VERILATOR_ROOT"] = share_dir
+            env["VERILATOR_ROOT"] = share_dir
+
     for tool_name in ("iverilog", "vvp", "yosys", "verilator", "verible-verilog-lint"):
-        info = _detect_tool(tool_name, env)
+        # On Windows, prefer verilator_bin.exe over verilator (Perl wrapper)
+        actual_name = tool_name
+        if tool_name == "verilator" and system == "Windows":
+            actual_name = "verilator_bin"
+        info = _detect_tool(actual_name, env)
+        # Store under canonical name
+        info.name = tool_name
         result.tools[tool_name] = info
         if not info.available:
             result.warnings.append(f"{tool_name} not found in PATH")
@@ -137,7 +156,7 @@ def _detect_tool(name: str, env: Dict[str, str]) -> ToolInfo:
             r = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=5, env=env)
             if r.stdout:
                 info.version = r.stdout.split('\n')[0].strip()
-        elif name == "verilator":
+        elif name == "verilator" or name == "verilator_bin":
             r = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=5, env=env)
             if r.stdout:
                 info.version = r.stdout.strip()
