@@ -6,6 +6,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..common.toolchain_detect import detect_toolchain
+from ..common.experience_db import ExperienceDB, FailureCase, DesignPattern
+
 
 @dataclass
 class SimulationResult:
@@ -58,10 +61,16 @@ class SimulationResult:
 class SimulationRunner:
     """Run Verilog simulations using various simulators."""
 
-    def __init__(self, simulator: str = "iverilog", output_dir: Optional[Path] = None):
+    def __init__(self, simulator: str = "iverilog", output_dir: Optional[Path] = None,
+                 experience_db: Optional[ExperienceDB] = None):
         self.simulator = simulator
         self.output_dir = output_dir or Path("sim_output")
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        # Auto-detect toolchain for correct PATH (esp. Windows + oss-cad-suite)
+        self._toolchain = detect_toolchain()
+        self._env = self._toolchain.shell_env()
+        # Optional experience DB for auto-recording sim results
+        self._exp_db = experience_db
 
     def run(
         self,
@@ -73,11 +82,44 @@ class SimulationRunner:
         """Run simulation."""
 
         if self.simulator == "iverilog":
-            return self._run_iverilog(design_files, testbench_file, top_module, run_timeout)
+            result = self._run_iverilog(design_files, testbench_file, top_module, run_timeout)
         elif self.simulator == "verilator":
-            return self._run_verilator(design_files, testbench_file, top_module, run_timeout)
+            result = self._run_verilator(design_files, testbench_file, top_module, run_timeout)
         else:
             raise ValueError(f"Unsupported simulator: {self.simulator}")
+
+        # Auto-record to experience DB
+        if self._exp_db:
+            self._record_experience(result, top_module)
+
+        return result
+
+    def _record_experience(self, result: SimulationResult, top_module: str):
+        """Record simulation result to experience DB."""
+        try:
+            if not result.success:
+                self._exp_db.record_failure(FailureCase(
+                    case_id="",
+                    module_name=top_module,
+                    target_frequency_mhz=0,
+                    stage="4",
+                    failure_type="sim_failure",
+                    error_message=result.error[:500] if result.error else "Unknown",
+                ))
+            else:
+                self._exp_db.save_pattern(DesignPattern(
+                    pattern_id=f"sim_pass_{top_module}",
+                    name=f"{top_module} simulation pass",
+                    description=f"Simulation passed: {result.tests_passed} tests, {result.assertions_passed} assertions",
+                    module_type="simulation",
+                    target_frequency_mhz=0,
+                    micro_arch_spec={},
+                    yaml_template="",
+                    success_count=1,
+                    tags=["sim_pass", top_module],
+                ))
+        except Exception:
+            pass  # Don't let DB errors break simulation flow
 
     def _run_iverilog(
         self,
@@ -112,12 +154,13 @@ class SimulationRunner:
                     compile_cmd.append(str(f))
                 compile_cmd.append(str(testbench_file))
 
-                # Run compilation
+                # Run compilation (use auto-detected toolchain env)
                 compile_result = subprocess.run(
                     compile_cmd,
                     capture_output=True,
                     text=True,
                     timeout=timeout,
+                    env=self._env,
                 )
 
                 if compile_result.returncode != 0:
@@ -134,6 +177,7 @@ class SimulationRunner:
                     capture_output=True,
                     text=True,
                     timeout=timeout,
+                    env=self._env,
                 )
 
                 result.return_code = run_result.returncode

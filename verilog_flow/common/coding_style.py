@@ -1,5 +1,6 @@
 """Coding style management for RTL generation."""
 
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -257,7 +258,7 @@ class CodingStyleManager:
     # ── Validation ────────────────────────────────────────────────────
 
     def validate_code(self, code: str, style: CodingStyle) -> List[LintIssue]:
-        """Run basic coding-style checks against generated RTL code."""
+        """Run coding-style checks against generated RTL code."""
         issues: List[LintIssue] = []
         lines = code.split("\n")
         for i, line in enumerate(lines, 1):
@@ -276,4 +277,52 @@ class CodingStyleManager:
                         "INDENT", i,
                         f"Indentation ({leading}) not a multiple of {style.indent}",
                         "recommended"))
+
+        # ── v3.2: Naming convention enforcement ──────────────────────
+        naming = style.naming
+
+        # Module name check
+        if naming.get("module") == "snake_case":
+            for i, line in enumerate(lines, 1):
+                m = re.match(r'\s*module\s+(\w+)', line)
+                if m:
+                    name = m.group(1)
+                    if name != name.lower() or re.search(r'[A-Z]', name):
+                        issues.append(LintIssue(
+                            "NAMING_MODULE", i,
+                            f'Module name "{name}" is not snake_case',
+                            "required"))
+
+        # Signal name check (reg/wire declarations)
+        if naming.get("signal") == "snake_case":
+            sig_re = re.compile(
+                r'\b(?:reg|wire|logic)\b\s+(?:signed\s+)?(?:\[[^\]]*\]\s+)?(\w+)')
+            for i, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if stripped.startswith('//'):
+                    continue
+                for m in sig_re.finditer(stripped):
+                    name = m.group(1)
+                    if re.search(r'[A-Z]', name):
+                        issues.append(LintIssue(
+                            "NAMING_SIGNAL", i,
+                            f'Signal "{name}" is not snake_case',
+                            "required"))
+
+        # Parameter name check
+        param_style = naming.get("parameter", "UPPER_CASE")
+        if "UPPER" in param_style:
+            param_re = re.compile(r'\b(?:parameter|localparam)\b\s+(?:\[[^\]]*\]\s+)?(\w+)')
+            for i, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if stripped.startswith('//'):
+                    continue
+                for m in param_re.finditer(stripped):
+                    name = m.group(1)
+                    if name != name.upper():
+                        issues.append(LintIssue(
+                            "NAMING_PARAM", i,
+                            f'Parameter "{name}" is not UPPER_CASE',
+                            "recommended"))
+
         return issues

@@ -1,6 +1,9 @@
 """Stage gate checker — quality gates between VeriFlow pipeline stages."""
 
+import json
+import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -16,12 +19,24 @@ class GateIssue:
 
 
 @dataclass
+class ApprovalRecord:
+    """Record of a manual stage-transition approval."""
+    from_stage: int
+    to_stage: int
+    approved_by: str
+    approved_at: str
+    gate_result_summary: str
+    token: str = ""
+
+
+@dataclass
 class StageGateResult:
     """Result of a stage gate check."""
     stage: int
     passed: bool
     issues: List[GateIssue] = field(default_factory=list)
     metrics: Dict[str, float] = field(default_factory=dict)
+    approval: Optional[ApprovalRecord] = None
 
     @property
     def errors(self) -> List[GateIssue]:
@@ -30,6 +45,11 @@ class StageGateResult:
     @property
     def warnings(self) -> List[GateIssue]:
         return [i for i in self.issues if i.severity == "warning"]
+
+    @property
+    def fully_approved(self) -> bool:
+        """True only if gate passed AND manual approval was given."""
+        return self.passed and self.approval is not None
 
 
 class StageGateChecker:
@@ -56,15 +76,121 @@ class StageGateChecker:
         """Run gate checks for all stages."""
         return [self.check_stage(s) for s in sorted(self._checkers)]
 
-    def check_transition(self, from_stage: int, to_stage: int) -> StageGateResult:
-        """Check whether it is safe to transition from one stage to the next."""
+    def check_transition(self, from_stage: int, to_stage: int,
+                         approve_token: Optional[str] = None,
+                         approved_by: str = "unknown") -> StageGateResult:
+        """Check whether it is safe to transition from one stage to the next.
+
+        Requires BOTH:
+          1. Automated gate checks pass (no errors)
+          2. Explicit manual approval via approve_token or interactive prompt
+
+        Without approval, result.fully_approved will be False even if
+        automated checks pass.
+        """
         result = self.check_stage(from_stage)
         if result.errors:
             result.passed = False
             result.issues.append(GateIssue(
                 "TRANSITION_BLOCKED", "error",
                 f"Stage {from_stage} has errors — cannot proceed to stage {to_stage}"))
+            return result
+
+        # ── Manual approval gate ─────────────────────────────────────
+        if approve_token:
+            result.approval = self._create_approval(
+                from_stage, to_stage, approved_by, approve_token, result)
+            self._save_approval(result.approval)
+        else:
+            result.issues.append(GateIssue(
+                "APPROVAL_REQUIRED", "error",
+                f"Stage {from_stage}→{to_stage} requires manual approval. "
+                f"Use --approve-token <token> or call require_manual_approval() interactively."))
+            result.passed = False
+
         return result
+
+    def require_manual_approval(self, from_stage: int, to_stage: int,
+                                 approved_by: str = "interactive") -> ApprovalRecord:
+        """Interactive manual approval — blocks until user confirms.
+
+        Call this from CLI or script. Prints gate summary and asks for y/N.
+        Returns ApprovalRecord on success, raises RuntimeError on rejection.
+        """
+        result = self.check_stage(from_stage)
+
+        # Print summary for human review
+        print(f"\n{'='*60}")
+        print(f"  STAGE GATE: {from_stage} → {to_stage}")
+        print(f"{'='*60}")
+        print(f"  Errors:   {len(result.errors)}")
+        print(f"  Warnings: {len(result.warnings)}")
+        print(f"  Metrics:  {result.metrics}")
+        if result.issues:
+            print(f"\n  Issues:")
+            for issue in result.issues:
+                print(f"    [{issue.severity.upper()}] {issue.check}: {issue.message}")
+        print(f"{'='*60}")
+
+        if result.errors:
+            raise RuntimeError(
+                f"Stage {from_stage} has {len(result.errors)} error(s). "
+                f"Fix them before requesting approval.")
+
+        # Ask for confirmation
+        answer = input(f"\n  Approve transition Stage {from_stage} → {to_stage}? [y/N]: ").strip().lower()
+        if answer != 'y':
+            raise RuntimeError(f"Transition {from_stage}→{to_stage} rejected by user.")
+
+        token = f"manual_{int(time.time())}"
+        approval = self._create_approval(from_stage, to_stage, approved_by, token, result)
+        self._save_approval(approval)
+        print(f"  ✓ Approved. Token: {token}\n")
+        return approval
+
+    def _create_approval(self, from_stage: int, to_stage: int,
+                         approved_by: str, token: str,
+                         result: StageGateResult) -> ApprovalRecord:
+        summary = (f"errors={len(result.errors)}, warnings={len(result.warnings)}, "
+                   f"metrics={result.metrics}")
+        return ApprovalRecord(
+            from_stage=from_stage,
+            to_stage=to_stage,
+            approved_by=approved_by,
+            approved_at=datetime.now().isoformat(),
+            gate_result_summary=summary,
+            token=token,
+        )
+
+    def _save_approval(self, approval: ApprovalRecord):
+        """Persist approval record to .veriflow/approvals/."""
+        approvals_dir = self.layout.root / ".veriflow" / "approvals"
+        approvals_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"approval_{approval.from_stage}_to_{approval.to_stage}_{approval.token}.json"
+        path = approvals_dir / filename
+        data = {
+            "from_stage": approval.from_stage,
+            "to_stage": approval.to_stage,
+            "approved_by": approval.approved_by,
+            "approved_at": approval.approved_at,
+            "gate_result_summary": approval.gate_result_summary,
+            "token": approval.token,
+        }
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    def get_approval_history(self) -> List[ApprovalRecord]:
+        """Load all approval records from disk."""
+        approvals_dir = self.layout.root / ".veriflow" / "approvals"
+        if not approvals_dir.exists():
+            return []
+        records = []
+        for f in sorted(approvals_dir.glob("approval_*.json")):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                records.append(ApprovalRecord(**data))
+            except Exception:
+                continue
+        return records
 
     # ── Per-stage checkers ───────────────────────────────────────────
 

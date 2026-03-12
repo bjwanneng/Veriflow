@@ -76,6 +76,12 @@ class LintChecker:
             self._check_inferred_latches,
             self._check_multi_driver_reset,
             self._check_unpacked_array_port,
+            # v3.2 rules — derived from real-project bug patterns
+            self._check_reg_driven_by_assign,
+            self._check_forward_reference,
+            self._check_nba_as_combinational,
+            self._check_multi_driver_conflict,
+            self._check_axis_handshake_pulse,
         ]
 
     def check(self, verilog_code: str, file_path: str = "<unknown>") -> LintResult:
@@ -427,4 +433,189 @@ class LintChecker:
                 suggestion='Use a flat bus instead: [N*W-1:0] name',
             ))
 
+        return issues
+
+    # ── v3.2 rules — real-project bug patterns ───────────────────────
+
+    def _check_reg_driven_by_assign(self, code: str) -> List[LintIssue]:
+        """Detect reg signals driven by continuous assign (Bug #1 pattern).
+
+        In Verilog-2005, `assign` targets must be `wire`. A `reg` driven by
+        `assign` causes iverilog error and is always a design mistake.
+        """
+        issues = []
+        reg_names: Dict[str, int] = {}
+        for i, line in enumerate(code.split('\n'), 1):
+            stripped = line.strip()
+            if stripped.startswith('//'):
+                continue
+            for m in re.finditer(r'\breg\b\s+(?:signed\s+)?(?:\[[^\]]*\]\s+)?(\w+)', stripped):
+                reg_names[m.group(1)] = i
+
+        for m in re.finditer(r'\bassign\s+(\w+)', code):
+            sig = m.group(1)
+            if sig in reg_names:
+                line_number = code[:m.start()].count('\n') + 1
+                issues.append(LintIssue(
+                    severity='error',
+                    rule_id='REG_DRIVEN_BY_ASSIGN',
+                    message=f'Signal "{sig}" declared as reg (line {reg_names[sig]}) but driven by assign',
+                    line_number=line_number,
+                    suggestion=f'Change "reg" to "wire" for "{sig}", or use an always block instead of assign',
+                ))
+        return issues
+
+    def _check_forward_reference(self, code: str) -> List[LintIssue]:
+        """Detect signals used before declaration (Bug #6 pattern).
+
+        iverilog -g2005 enforces strict declaration-before-use.
+        """
+        issues = []
+        lines = code.split('\n')
+        decl_line: Dict[str, int] = {}
+        decl_re = re.compile(
+            r'\b(?:wire|reg|integer|localparam|parameter|genvar)\b'
+            r'\s+(?:signed\s+)?(?:\[[^\]]*\]\s+)?(\w+)'
+        )
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//') or stripped.startswith('`'):
+                continue
+            for m in decl_re.finditer(stripped):
+                name = m.group(1)
+                if name not in decl_line:
+                    decl_line[name] = i
+
+        _KEYWORDS = {'and', 'or', 'not', 'xor', 'nand', 'nor', 'xnor',
+                     'if', 'else', 'begin', 'end', 'wire', 'reg'}
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if stripped.startswith('//'):
+                continue
+            if not re.match(r'\bassign\b', stripped):
+                continue
+            assign_m = re.match(r'assign\s+\w+\s*=\s*(.+);', stripped)
+            if not assign_m:
+                continue
+            rhs = assign_m.group(1)
+            for ident_m in re.finditer(r'\b([a-zA-Z_]\w*)\b', rhs):
+                name = ident_m.group(1)
+                if name in _KEYWORDS:
+                    continue
+                if name in decl_line and decl_line[name] > i:
+                    issues.append(LintIssue(
+                        severity='error',
+                        rule_id='FORWARD_REFERENCE',
+                        message=f'Signal "{name}" used on line {i} before declaration on line {decl_line[name]}',
+                        line_number=i,
+                        suggestion=f'Move the declaration of "{name}" before line {i}',
+                    ))
+        return issues
+
+    def _check_nba_as_combinational(self, code: str) -> List[LintIssue]:
+        """Detect non-blocking assignment consumed combinationally in same block (Bug #3).
+
+        `sig <= expr;` then `... = ... + sig` in the same clocked always block
+        reads the PREVIOUS cycle's value — almost always a bug.
+        """
+        issues = []
+        clocked_re = re.compile(
+            r'always\s*@\s*\([^)]*(?:posedge|negedge)[^)]*\)(.*?)(?=\balways\b|\bendmodule\b|$)',
+            re.IGNORECASE | re.DOTALL,
+        )
+        for block_m in clocked_re.finditer(code):
+            block = block_m.group(1)
+            block_start = block_m.start(1)
+            nba_targets: set = set()
+            for nba_m in re.finditer(r'(\w+)\s*<=\s*', block):
+                nba_targets.add(nba_m.group(1))
+            for ba_m in re.finditer(r'(\w+)\s*=\s*([^;]+);', block):
+                lhs = ba_m.group(1)
+                rhs = ba_m.group(2)
+                for target in nba_targets:
+                    if target == lhs:
+                        continue
+                    if re.search(rf'\b{re.escape(target)}\b', rhs):
+                        abs_pos = block_start + ba_m.start()
+                        line_number = code[:abs_pos].count('\n') + 1
+                        issues.append(LintIssue(
+                            severity='warning',
+                            rule_id='NBA_AS_COMBINATIONAL',
+                            message=f'Signal "{target}" written with <= but read combinationally (=) in same block',
+                            line_number=line_number,
+                            suggestion=f'Use a combinational wire for "{target}" or restructure the pipeline staging',
+                        ))
+        return issues
+
+    def _check_multi_driver_conflict(self, code: str) -> List[LintIssue]:
+        """Detect signals driven by both always blocks and assign statements (Bug #7).
+
+        A signal can only have ONE driver type — either always (reg) or assign (wire).
+        """
+        issues = []
+        lines = code.split('\n')
+        always_driven: Dict[str, int] = {}
+        in_always = False
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if re.match(r'always\s*@', stripped):
+                in_always = True
+            if in_always:
+                for m in re.finditer(r'(\w+)\s*<?=\s*', stripped):
+                    sig = m.group(1)
+                    if sig not in ('if', 'else', 'case', 'begin', 'end',
+                                   'for', 'while', 'assign'):
+                        if sig not in always_driven:
+                            always_driven[sig] = i
+            if re.match(r'\bendmodule\b', stripped):
+                in_always = False
+
+        assign_driven: Dict[str, int] = {}
+        for i, line in enumerate(lines, 1):
+            m = re.match(r'\s*assign\s+(\w+)', line)
+            if m:
+                assign_driven[m.group(1)] = i
+
+        for sig in set(always_driven) & set(assign_driven):
+            issues.append(LintIssue(
+                severity='error',
+                rule_id='MULTI_DRIVER_CONFLICT',
+                message=f'Signal "{sig}" driven by both always (line {always_driven[sig]}) and assign (line {assign_driven[sig]})',
+                line_number=assign_driven[sig],
+                suggestion=f'Use only one driver type for "{sig}": either always block (reg) or assign (wire)',
+            ))
+        return issues
+
+    def _check_axis_handshake_pulse(self, code: str) -> List[LintIssue]:
+        """Detect AXI-Stream valid pulsed without checking ready (Bug #5).
+
+        AXI-Stream requires valid held HIGH until ready acknowledges.
+        Pulsing valid for one cycle without checking ready loses data.
+        """
+        issues = []
+        lines = code.split('\n')
+        valid_sigs = set()
+        for line in lines:
+            for m in re.finditer(r'(\w*(?:valid|tvalid)\w*)', line, re.IGNORECASE):
+                valid_sigs.add(m.group(1))
+        if not valid_sigs:
+            return issues
+
+        for sig in valid_sigs:
+            clear_lines = []
+            for i, line in enumerate(lines, 1):
+                if re.search(rf'\b{re.escape(sig)}\s*<=\s*(?:1\'b)?0\s*;', line.strip()):
+                    clear_lines.append(i)
+            ready_sig = sig.replace('valid', 'ready').replace('tvalid', 'tready')
+            for cl in clear_lines:
+                ctx_start = max(0, cl - 6)
+                context = '\n'.join(lines[ctx_start:cl])
+                if not re.search(rf'\b{re.escape(ready_sig)}\b', context):
+                    issues.append(LintIssue(
+                        severity='warning',
+                        rule_id='AXIS_HANDSHAKE_PULSE',
+                        message=f'"{sig}" cleared without checking "{ready_sig}" — data may be lost',
+                        line_number=cl,
+                        suggestion=f'Hold "{sig}" high until "{ready_sig}" acknowledges',
+                    ))
         return issues

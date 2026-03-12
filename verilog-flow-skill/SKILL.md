@@ -4,11 +4,11 @@ description: Industrial-grade Verilog code generation system with timing and mic
 license: MIT
 metadata:
   author: VeriFlow Team
-  version: "3.1.0"
+  version: "3.2.0"
   category: hardware-design
 ---
 
-# VeriFlow-Agent 3.0
+# VeriFlow-Agent 3.2
 
 Industrial-grade Verilog code generation system with timing and micro-architecture awareness.
 
@@ -225,6 +225,54 @@ report = analyzer.analyze(n_recent=10)
 | `vf-synth run` | Run synthesis |
 | `vf-synth analyze` | Detailed timing/area analysis |
 
+## v3.2 Changelog — Real-Project Hardening
+
+### New Lint Rules (5 rules added to `lint_checker.py`)
+
+| Rule ID | Severity | Description |
+|---------|----------|-------------|
+| `REG_DRIVEN_BY_ASSIGN` | error | `reg` signal driven by `assign` — must be `wire` |
+| `FORWARD_REFERENCE` | error | Signal used before declaration (iverilog -g2005 strict) |
+| `NBA_AS_COMBINATIONAL` | warning | Non-blocking `<=` target read combinationally in same block |
+| `MULTI_DRIVER_CONFLICT` | error | Signal driven by both `always` and `assign` |
+| `AXIS_HANDSHAKE_PULSE` | warning | AXI-Stream `valid` cleared without checking `ready` |
+
+### Enhanced Coding Style Validation
+
+`CodingStyleManager.validate_code()` now enforces:
+- Module name snake_case check
+- Signal name snake_case check
+- Parameter UPPER_CASE check
+
+### Toolchain Auto-Detection (`common/toolchain_detect.py`)
+
+- Auto-detects OS and oss-cad-suite installation
+- Windows: automatically adds `lib/` to PATH for DLL resolution
+- Unified `shell_env()` for all subprocess calls (sim + synth)
+- Avoids `cmd.exe /c` wrapper issues on Windows
+
+### Experience DB Auto-Recording
+
+`SimulationRunner` and `SynthesisRunner` now accept optional `experience_db` parameter:
+- On failure: auto-records `FailureCase` with error details
+- On success: auto-records `DesignPattern` with metrics (cell count, timing, etc.)
+
+### Human-in-the-Loop Stage Gate
+
+Stage transitions now require explicit manual approval:
+
+```python
+# Interactive (CLI)
+checker = StageGateChecker(layout)
+checker.require_manual_approval(3, 4)  # Prints summary, asks y/N
+
+# Programmatic (CI/script)
+result = checker.check_transition(3, 4, approve_token="my_token", approved_by="engineer_name")
+assert result.fully_approved
+```
+
+Approval records are persisted to `.veriflow/approvals/` for audit trail.
+
 ## Troubleshooting
 
 ### Import Error
@@ -234,6 +282,11 @@ cd verilog_flow && pip install -e .
 
 ### Yosys / Simulator Not Found
 Install Yosys (`apt install yosys` / `brew install yosys`) or Icarus Verilog (`apt install iverilog`).
+
+As of v3.2, toolchain auto-detection handles oss-cad-suite on Windows/Linux/macOS automatically. If tools are still not found, set `YOSYSHQ_ROOT` environment variable to your oss-cad-suite directory.
+
+### Windows: cmd.exe Swallows Output
+Do NOT wrap iverilog/yosys in `cmd.exe /c`. VeriFlow v3.2 runs tools directly with correct PATH via `toolchain_detect`.
 
 ## License
 

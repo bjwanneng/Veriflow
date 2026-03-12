@@ -7,63 +7,18 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..common.toolchain_detect import detect_toolchain
+
 
 class YosysInterface:
     """Interface to Yosys synthesis tool."""
 
     def __init__(self):
-        self.available = self._check_yosys()
-
-    def _check_yosys(self) -> bool:
-        """Check if Yosys is available, with oss-cad-suite auto-detection."""
-        # Try direct invocation first
-        if self._try_yosys():
-            return True
-
-        # Auto-detect oss-cad-suite in common locations
-        candidates = []
-        yosyshq_root = os.environ.get("YOSYSHQ_ROOT")
-        if yosyshq_root:
-            candidates.append(Path(yosyshq_root))
-
-        system = platform.system()
-        home = Path.home()
-        if system == "Windows":
-            candidates += [
-                Path("C:/oss-cad-suite"),
-                home / "oss-cad-suite",
-            ]
-        else:
-            candidates += [
-                home / "oss-cad-suite",
-                Path("/opt/oss-cad-suite"),
-            ]
-
-        for base in candidates:
-            bin_dir = base / "bin"
-            lib_dir = base / "lib"
-            if bin_dir.is_dir():
-                os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
-                if lib_dir.is_dir():
-                    os.environ["PATH"] = str(lib_dir) + os.pathsep + os.environ["PATH"]
-                if self._try_yosys():
-                    return True
-
-        return False
-
-    @staticmethod
-    def _try_yosys() -> bool:
-        """Attempt to run yosys -V."""
-        try:
-            result = subprocess.run(
-                ["yosys", "-V"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            return result.returncode == 0
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return False
+        # Use unified toolchain detection (handles Windows + oss-cad-suite PATH)
+        self._toolchain = detect_toolchain()
+        self._env = self._toolchain.shell_env()
+        yosys_info = self._toolchain.tools.get("yosys")
+        self.available = yosys_info.available if yosys_info else False
 
     @staticmethod
     def install_hint() -> str:
@@ -120,7 +75,8 @@ class YosysInterface:
                 ["yosys", str(script_path)],
                 capture_output=True,
                 text=True,
-                timeout=300
+                timeout=300,
+                env=self._env,
             )
 
             # Parse output

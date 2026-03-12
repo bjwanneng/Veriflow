@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .yosys_interface import YosysInterface
+from ..common.experience_db import ExperienceDB, FailureCase, DesignPattern
 
 
 @dataclass
@@ -93,10 +94,12 @@ class SynthesisResult:
 class SynthesisRunner:
     """Run synthesis and collect results."""
 
-    def __init__(self, output_dir: Optional[Path] = None):
+    def __init__(self, output_dir: Optional[Path] = None,
+                 experience_db: Optional[ExperienceDB] = None):
         self.output_dir = output_dir or Path("synthesis_output")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.yosys = YosysInterface()
+        self._exp_db = experience_db
 
     def run(
         self,
@@ -204,7 +207,53 @@ class SynthesisRunner:
             result.errors.append(f"Synthesis failed: {e}")
             result.synthesis_time_seconds = time.time() - start_time
 
+        # Auto-record to experience DB
+        if self._exp_db:
+            self._record_experience(result)
+
         return result
+
+    def _record_experience(self, result: SynthesisResult):
+        """Record synthesis result to experience DB."""
+        try:
+            if not result.success or result.errors:
+                self._exp_db.record_failure(FailureCase(
+                    case_id="",
+                    module_name=result.module_name,
+                    target_frequency_mhz=result.target_frequency_mhz,
+                    stage="5",
+                    failure_type="synth_failure",
+                    error_message="; ".join(result.errors)[:500],
+                    yosys_report={
+                        "cell_count": result.cell_count,
+                        "ff_count": result.flip_flop_count,
+                        "lut_count": result.lut_count,
+                    },
+                ))
+            else:
+                self._exp_db.save_pattern(DesignPattern(
+                    pattern_id=f"synth_pass_{result.module_name}",
+                    name=f"{result.module_name} synthesis pass",
+                    description=(
+                        f"Cells={result.cell_count}, FFs={result.flip_flop_count}, "
+                        f"LUTs={result.lut_count}, Fmax={result.estimated_max_frequency_mhz:.1f}MHz"
+                    ),
+                    module_type="synthesis",
+                    target_frequency_mhz=result.target_frequency_mhz,
+                    micro_arch_spec={
+                        "cell_count": result.cell_count,
+                        "ff_count": result.flip_flop_count,
+                        "lut_count": result.lut_count,
+                        "bram_count": result.bram_count,
+                        "dsp_count": result.dsp_count,
+                        "timing_met": result.timing_met,
+                    },
+                    yaml_template="",
+                    success_count=1,
+                    tags=["synth_pass", result.module_name],
+                ))
+        except Exception:
+            pass  # Don't let DB errors break synthesis flow
 
     def check_timing_closure(
         self, result: SynthesisResult, slack_threshold_ns: float = 0.0
