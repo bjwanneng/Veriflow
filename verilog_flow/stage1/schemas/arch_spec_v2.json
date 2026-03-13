@@ -1,0 +1,214 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MicroArchSpec v2",
+  "description": "Complete micro-architecture specification schema",
+  "type": "object",
+  "required": ["design_name", "description", "target_frequency_mhz", "data_width"],
+  "properties": {
+    "design_name": {
+      "type": "string",
+      "description": "Name of the design"
+    },
+    "description": {
+      "type": "string",
+      "description": "Design description"
+    },
+    "target_frequency_mhz": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Target operating frequency in MHz"
+    },
+    "data_width": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Primary data path width in bits"
+    },
+    "modules": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/module"
+      }
+    },
+    "module_connections": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/connection"
+      }
+    },
+    "data_flow_paths": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/dataflow"
+      }
+    },
+    "hierarchy_tree": {
+      "type": "object"
+    },
+    "pipeline_stages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/pipeline_stage"
+      }
+    },
+    "timing_constraints": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/timing_constraint"
+      }
+    },
+    "design_constraints": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "architecture_summary": {
+      "type": "string"
+    }
+  },
+  "definitions": {
+    "module": {
+      "type": "object",
+      "required": ["name", "description", "module_type"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "description": {
+          "type": "string"
+        },
+        "module_type": {
+          "type": "string",
+          "enum": ["processing", "control", "memory", "interface"]
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/port"
+          }
+        },
+        "estimated_complexity": {
+          "type": "string",
+          "enum": ["low", "medium", "high"]
+        }
+      }
+    },
+    "port": {
+      "type": "object",
+      "required": ["name", "direction", "width"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "direction": {
+          "type": "string",
+          "enum": ["input", "output", "inout"]
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "protocol": {
+          "type": "string",
+          "enum": ["axi_stream", "axi_lite", "custom", "clock", "reset"]
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "connection": {
+      "type": "object",
+      "required": ["source_module", "source_port", "dest_module", "dest_port", "data_width"],
+      "properties": {
+        "source_module": {
+          "type": "string"
+        },
+        "source_port": {
+          "type": "string"
+        },
+        "dest_module": {
+          "type": "string"
+        },
+        "dest_port": {
+          "type": "string"
+        },
+        "data_width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "protocol": {
+          "type": "string"
+        }
+      }
+    },
+    "dataflow": {
+      "type": "object",
+      "required": ["name", "description", "modules"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "modules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "latency_cycles": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "throughput": {
+          "type": "string"
+        }
+      }
+    },
+    "pipeline_stage": {
+      "type": "object",
+      "required": ["stage_id", "name", "operations"],
+      "properties": {
+        "stage_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "name": {
+          "type": "string"
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "estimated_delay_ns": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "timing_constraint": {
+      "type": "object",
+      "required": ["constraint_type", "target", "value"],
+      "properties": {
+        "constraint_type": {
+          "type": "string",
+          "enum": ["clock_period", "setup", "hold", "max_delay"]
+        },
+        "target": {
+          "type": "string"
+        },
+        "value": {
+          "type": "number"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

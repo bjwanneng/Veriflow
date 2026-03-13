@@ -17,6 +17,7 @@ from .golden_trace import (
     generate_golden_trace,
 )
 from .validator import validate_scenario, ValidationResult, load_schema
+from .cocotb_gen import CocotbTestGenerator
 
 __all__ = [
     # YAML DSL
@@ -40,4 +41,6 @@ __all__ = [
     "validate_scenario",
     "ValidationResult",
     "load_schema",
+    # Cocotb
+    "CocotbTestGenerator",
 ]
