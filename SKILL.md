@@ -4,7 +4,7 @@ description: Industrial-grade Verilog code generation system with timing and mic
 license: MIT
 metadata:
   author: VeriFlow Team
-  version: "3.2.0"
+  version: "3.3.0"
   category: hardware-design
 ---
 
@@ -71,6 +71,39 @@ On Windows with oss-cad-suite:
 - MUST add BOTH `bin/` AND `lib/` to PATH
 - MUST NOT wrap commands in `cmd.exe /c` — run directly from bash
 - Use `toolchain_detect.detect_toolchain()` to get correct environment
+
+### Rule 9: ALWAYS generate ALL modules defined in spec
+When Stage 3 completes, every module listed in the spec JSON's `modules` array MUST have a corresponding `.v` file under `stage_3_codegen/rtl/`. If context window limits prevent generating all modules in one pass, generate them in batches — do NOT stop after a partial set. Stage 3 is not complete until every module has a file.
+
+### Rule 10: ALWAYS verify compilation after codegen
+Before transitioning from Stage 3 to Stage 4, compile all generated `.v` files with `iverilog`. Any compilation error MUST be fixed and re-verified. Do not proceed to Stage 4 with code that does not compile.
+
+### Rule 11: NEVER use ellipsis or truncation in generated code
+Generated Verilog code must NEVER contain `// ...`, `// continue`, `// TODO`, `// placeholder`, `/* ... */`, or any other ellipsis/truncation marker. Lookup tables (e.g., S-Box 256-entry tables) MUST be fully expanded with every entry present. If the content is too long for a single write, split it across multiple writes — but the final file must be complete.
+
+### Rule 12: Testbench MUST have working DUT instantiation
+Every generated testbench MUST contain a complete DUT module instantiation with all ports connected. Port names and widths MUST match the RTL module's actual port list. Commented-out instantiations (`// dut u_dut(...)`) or placeholder port connections (`/* ... port connections ... */`) are forbidden.
+
+### Rule 13: Testbench MUST include self-checking logic
+Every testbench MUST contain at least one pass/fail check that compares actual output against an expected value. A testbench that only prints waveforms or displays signals without any assertion or comparison is incomplete. Use `$display("PASS")` / `$display("FAIL")` or equivalent to report results.
+
+### Rule 14: ALWAYS mark stages complete with Completion Marker
+Before proceeding to the next stage, you MUST:
+1. Call `StageGateChecker.mark_stage_complete(stage_number)`
+2. This creates an immutable marker in `.veriflow/stage_completed/`
+3. No skipping stages — Stage N+1 can only start if Stage N marker exists
+
+### Rule 15: ALWAYS use two-layer lint in Stage 3
+Before Stage 3 can be marked complete:
+1. Run Layer 1: `LintChecker.check_file_deep()` (Python regex)
+2. Run Layer 2: Verilator `--lint-only` (if available)
+3. ALL severity="error" issues MUST be fixed
+
+### Rule 16: Byte order MUST be explicit in crypto modules
+For AES/DES/other crypto modules:
+- Spec MUST define `byte_order` field (MSB_FIRST or LSB_FIRST)
+- Code MUST have comments clarifying byte mapping (e.g., `s0 = [127:120], s15 = [7:0]`)
+- Lint checks for missing byte order docs in crypto modules
 
 ## Overview
 
@@ -439,6 +472,108 @@ As of v3.2, toolchain auto-detection handles oss-cad-suite on Windows/Linux/macO
 
 ### Windows: cmd.exe Swallows Output
 Do NOT wrap iverilog/yosys in `cmd.exe /c`. VeriFlow v3.2 runs tools directly with correct PATH via `toolchain_detect`.
+
+## v3.3 Changelog — AES-128 Project Hardening
+
+### New MANDATORY Rules (4 rules added)
+
+| Rule ID | Severity | Description |
+|---------|----------|-------------|
+| Rule 14 | MANDATORY | ALWAYS use Completion Marker for stage transitions |
+| Rule 15 | MANDATORY | ALWAYS run two-layer lint in Stage 3 |
+| Rule 16 | MANDATORY | Byte order MUST be explicit in crypto modules |
+
+### Stage Completion Marker (Hardened Gatekeeping)
+
+**Problem**: Users could accidentally skip stages or proceed without fixing issues.
+
+**Solution**: Immutable completion marker in `.veriflow/stage_completed/`:
+
+```python
+from verilog_flow.common.stage_gate import EnhancedStageGateChecker
+
+checker = EnhancedStageGateChecker(Path("."))
+
+# Check current state
+current_stage = checker.get_current_stage()  # e.g., 2
+can_proceed, reason = checker.can_proceed_to(3)
+# Returns (False, "Must complete Stage 2 first") if not ready
+
+# Mark complete after manual approval
+checker.mark_stage_complete(3)  # Creates immutable marker
+```
+
+### Two-Layer Lint ENFORCED in Stage Gate
+
+`StageGateChecker._check_stage3()` now calls `LintChecker.check_files_deep()`:
+
+```python
+def _check_stage3(self):
+    # ... existing checks ...
+    # NEW: Two-layer lint
+    lint_results = linter.check_files_deep(rtl_files)
+    for result in lint_results:
+        if not result.passed:
+            issues.append(...)  # Block transition
+    # ...
+```
+
+### New Lint Rules (AES Project Lessons)
+
+| Rule ID | Severity | Description |
+|---------|----------|-------------|
+| `BYTE_ORDER_NOT_DOCUMENTED` | warning | Crypto module missing byte order comment |
+| `TB_NO_SELFCHECK` | error | Testbench without PASS/FAIL checks |
+
+### Experience DB Updated with AES Failures
+
+New `FailureCase` entries from AES-128 project:
+
+```python
+FAILURE_PATTERNS = [
+    FailureCase(
+        rule_id="BYTE_ORDER_MISMATCH",
+        description="Byte order mismatch between spec and implementation",
+        symptoms=["NIST test vector fails at final output", "key expansion passes"],
+        root_cause="MSB-first vs LSB-first mapping confusion",
+        prevention="Explicit byte_order field in spec JSON",
+        fix="Align byte mapping to s[0] = [127:120], s[15] = [7:0]",
+        project="aes128_pipeline",
+        first_seen="2026-03-14"
+    ),
+    FailureCase(
+        rule_id="TB_NO_SELFCHECK",
+        description="Testbench has no self-checking logic",
+        symptoms=["Testbench only prints waves; no PASS/FAIL"],
+        root_cause="Testbench only displays signals, no comparison",
+        prevention="Lint rule requires at least one assertion/PASS check",
+        fix="Add $display(\"PASS\")/$display(\"FAIL\") or $assert",
+        project="aes128_pipeline",
+        first_seen="2026-03-14"
+    ),
+]
+```
+
+### Cocotb Integration (Stage 2/4)
+
+`stage2/cocotb_gen.py` is now integrated:
+
+```python
+from verilog_flow.stage2.cocotb_gen import CocotbTestGenerator
+
+gen = CocotbTestGenerator(output_dir=Path("stage_4_sim/tb"))
+test_code = gen.generate_module_test(module_spec)
+gen.save_test(test_code, f"test_{module_name}.py")
+```
+
+### Common Errors Quick Reference Updated
+
+| Error Message | Root Cause | Fix |
+|---------------|-----------|-----|
+| `Cannot skip stages: 1→3` | Stage completion not marked | Complete and mark Stage 2 first |
+| `Stage N has errors — cannot proceed` | Lint errors blocking | Fix all severity="error" issues |
+| `Byte order not documented` | Crypto module missing comment | Add s0/s15 byte mapping comment |
+| `Testbench has no PASS/FAIL checks` | Missing self-check logic | Add $display(\"PASS\")/FAIL or assertions |
 
 ## License
 

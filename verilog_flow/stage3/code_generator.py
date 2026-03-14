@@ -1,6 +1,7 @@
 """RTL Code Generator for Stage 3."""
 
 import re
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -9,6 +10,20 @@ from jinja2 import Environment, BaseLoader
 
 from ..stage1.spec_generator import MicroArchSpec, PipelineStage
 from ..common.coding_style import CodingStyle
+
+
+# Patterns that indicate incomplete/placeholder code
+_INCOMPLETE_PATTERNS = [
+    r'//\s*TODO',
+    r'//\s*FIXME',
+    r'//\s*placeholder',
+    r'//\s*\.\.\.',
+    r'//\s*continue\b',
+    r'/\*\s*\.\.\.\s*\*/',
+    r'/\*[^*]*port connections[^*]*\*/',
+]
+
+_INCOMPLETE_RE = re.compile('|'.join(_INCOMPLETE_PATTERNS), re.IGNORECASE)
 
 
 @dataclass
@@ -35,10 +50,68 @@ class GeneratedModule:
         if self.lines_of_code > 0:
             self.comment_ratio = comment_lines / self.lines_of_code
 
+    @property
+    def is_complete(self) -> bool:
+        """Check that code contains no TODO/placeholder/ellipsis markers."""
+        return _INCOMPLETE_RE.search(self.verilog_code) is None
+
+    @property
+    def incomplete_markers(self) -> list:
+        """Return all incomplete markers found in the code."""
+        return [m.group() for m in _INCOMPLETE_RE.finditer(self.verilog_code)]
+
+    @property
+    def has_implementation(self) -> bool:
+        """Check that the module has real logic, not just pass-through wiring.
+
+        Returns False if the module body contains only direct input-to-output
+        assigns with no always blocks or submodule instantiations.
+        """
+        code = self.verilog_code
+        has_always = bool(re.search(r'\balways\s*@', code))
+        has_assign = bool(re.search(r'\bassign\b', code))
+        # Match submodule instantiation but not module/task/function declarations
+        has_instantiation = bool(re.search(
+            r'(?<!module\s)(?<!task\s)(?<!function\s)'
+            r'\b(?!module\b|task\b|function\b|initial\b|always\b|assign\b|if\b|else\b|begin\b|end\b)'
+            r'\w+\s+(?!begin\b)\w+\s*\(',
+            code
+        ))
+
+        if not (has_always or has_assign or has_instantiation):
+            return False
+
+        # If ALL assigns are trivial pass-through and no always/instantiation, flag it
+        if not has_always and not has_instantiation:
+            lines = [l.strip() for l in code.splitlines()
+                     if l.strip() and not l.strip().startswith('//')]
+            assign_lines = [l for l in lines if l.startswith('assign')]
+            passthrough_re = re.compile(r'assign\s+o_\w+\s*=\s*i_\w+\s*;', re.IGNORECASE)
+            passthrough_lines = [l for l in assign_lines if passthrough_re.match(l)]
+            if assign_lines and len(passthrough_lines) == len(assign_lines):
+                return False
+
+        return True
+
     def save(self, output_dir: Path) -> Path:
-        """Save the generated module to file."""
+        """Save the generated module to file. Warns if incomplete."""
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        if not self.is_complete:
+            markers = self.incomplete_markers
+            warnings.warn(
+                f"[VeriFlow] Module '{self.module_name}' contains incomplete "
+                f"markers: {markers}. Generated code may have placeholders.",
+                stacklevel=2,
+            )
+
+        if not self.has_implementation:
+            warnings.warn(
+                f"[VeriFlow] Module '{self.module_name}' appears to lack real "
+                f"implementation (only pass-through or empty logic).",
+                stacklevel=2,
+            )
 
         self.file_path = output_dir / f"{self.module_name}.v"
         self.file_path.write_text(self.verilog_code, encoding='utf-8')

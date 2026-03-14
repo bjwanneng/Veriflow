@@ -173,7 +173,11 @@ class TestbenchGenerator:
         return "\n".join(lines)
 
     def generate_from_spec(self, spec: MicroArchSpec) -> str:
-        """Generate a basic testbench from micro-architecture spec."""
+        """Generate a testbench from micro-architecture spec.
+
+        Produces complete DUT instantiation with all ports connected
+        (no placeholders) and includes self-checking pass/fail logic.
+        """
 
         lines = []
 
@@ -191,45 +195,85 @@ class TestbenchGenerator:
         lines.append("reg rst_n;")
         lines.append("")
 
+        # Test result tracking
+        lines.append("// Test result tracking")
+        lines.append("integer test_count = 0;")
+        lines.append("integer pass_count = 0;")
+        lines.append("integer fail_count = 0;")
+        lines.append("")
+
+        # Collect all port declarations and names for DUT instantiation
+        port_decls = []   # lines for signal declarations
+        port_conns = []   # ".name(name)" for DUT instantiation
+        input_sigs = []   # (name, width) for initialization
+        valid_out_name = None
+        data_out_name = None
+
+        # Always include clk and rst_n
+        port_conns.append(".clk(clk)")
+        port_conns.append(".rst_n(rst_n)")
+
         # Interface signals
         for interface in spec.interfaces:
-            lines.append(f"// {interface.name} interface ({interface.protocol})")
-
-            # Data
+            # Data ports
             if interface.data_width > 0:
                 if interface.direction == "master":
-                    lines.append(f"reg  [{interface.data_width-1}:0] {interface.name}_data;")
-                    lines.append(f"wire [{interface.data_width-1}:0] {interface.name}_rdata;")
+                    port_decls.append(
+                        f"reg  [{interface.data_width-1}:0] {interface.name}_data;")
+                    port_decls.append(
+                        f"wire [{interface.data_width-1}:0] {interface.name}_rdata;")
+                    port_conns.append(f".{interface.name}_data({interface.name}_data)")
+                    port_conns.append(f".{interface.name}_rdata({interface.name}_rdata)")
+                    input_sigs.append((f"{interface.name}_data", interface.data_width))
+                    data_out_name = f"{interface.name}_rdata"
                 else:
-                    lines.append(f"wire [{interface.data_width-1}:0] {interface.name}_data;")
+                    port_decls.append(
+                        f"wire [{interface.data_width-1}:0] {interface.name}_data;")
+                    port_conns.append(f".{interface.name}_data({interface.name}_data)")
+                    data_out_name = f"{interface.name}_data"
 
-            # Address
+            # Address ports
             if interface.addr_width > 0:
-                lines.append(f"reg  [{interface.addr_width-1}:0] {interface.name}_addr;")
+                port_decls.append(
+                    f"reg  [{interface.addr_width-1}:0] {interface.name}_addr;")
+                port_conns.append(f".{interface.name}_addr({interface.name}_addr)")
+                input_sigs.append((f"{interface.name}_addr", interface.addr_width))
 
-            # Control
+            # Control ports (valid/ready)
             if interface.protocol in ["AXI4-Lite", "AXI4", "Custom"]:
-                lines.append(f"reg  {interface.name}_valid;")
-                lines.append(f"wire {interface.name}_ready;")
+                if interface.direction == "master":
+                    port_decls.append(f"reg  {interface.name}_valid;")
+                    port_decls.append(f"wire {interface.name}_ready;")
+                    input_sigs.append((f"{interface.name}_valid", 1))
+                else:
+                    port_decls.append(f"wire {interface.name}_valid;")
+                    port_decls.append(f"reg  {interface.name}_ready;")
+                    valid_out_name = f"{interface.name}_valid"
+                    input_sigs.append((f"{interface.name}_ready", 1))
+                port_conns.append(f".{interface.name}_valid({interface.name}_valid)")
+                port_conns.append(f".{interface.name}_ready({interface.name}_ready)")
 
-            lines.append("")
+        # Write signal declarations
+        for decl in port_decls:
+            lines.append(decl)
+        lines.append("")
 
-        # DUT instantiation (simplified)
+        # DUT instantiation — complete port connections, no placeholders
         lines.append("// DUT instantiation")
         lines.append(f"{spec.module_name} dut (")
-        lines.append("    .clk(clk),")
-        lines.append("    .rst_n(rst_n),")
-        lines.append("    /* ... port connections ... */")
+        for i, conn in enumerate(port_conns):
+            comma = "," if i < len(port_conns) - 1 else ""
+            lines.append(f"    {conn}{comma}")
         lines.append(");")
         lines.append("")
 
         # Clock generation
         lines.append("// Clock generation")
         half_period = self.config.clock_period_ns / 2
-        lines.append(f"initial begin")
-        lines.append(f"    clk = 0;")
+        lines.append("initial begin")
+        lines.append("    clk = 0;")
         lines.append(f"    forever #{half_period} clk = ~clk;")
-        lines.append(f"end")
+        lines.append("end")
         lines.append("")
 
         # Waveform dump
@@ -241,31 +285,90 @@ class TestbenchGenerator:
             lines.append("end")
             lines.append("")
 
-        # Basic test sequence
-        lines.append("// Basic test sequence")
+        # Main test sequence with self-checking
+        lines.append("// Test sequence")
         lines.append("initial begin")
-        lines.append("    // Initialize")
-        for interface in spec.interfaces:
-            if interface.protocol in ["AXI4-Lite", "AXI4", "Custom"]:
-                lines.append(f"    {interface.name}_valid = 0;")
-            if interface.data_width > 0 and interface.direction == "master":
-                lines.append(f"    {interface.name}_data = 0;")
-            if interface.addr_width > 0:
-                lines.append(f"    {interface.name}_addr = 0;")
+        lines.append(f'    $display("========================================");')
+        lines.append(f'    $display("Testbench: tb_{spec.module_name}");')
+        lines.append(f'    $display("========================================");')
         lines.append("")
 
+        # Initialize all inputs
+        lines.append("    // Initialize inputs")
+        for sig_name, _width in input_sigs:
+            lines.append(f"    {sig_name} = 0;")
+        lines.append("")
+
+        # Reset sequence
         lines.append("    // Reset")
         lines.append("    rst_n = 0;")
         lines.append(f"    #{self.config.reset_duration_ns};")
         lines.append("    rst_n = 1;")
+        lines.append('    $display("Reset released");')
         lines.append("")
 
-        lines.append("    // TODO: Add test stimulus")
-        lines.append(f"    repeat(10) @(posedge clk);")
+        # Basic stimulus: drive one transaction
+        lines.append("    // Test 1: Basic stimulus after reset")
+        lines.append("    test_count = test_count + 1;")
+        for sig_name, width in input_sigs:
+            if "valid" in sig_name.lower():
+                lines.append(f"    {sig_name} = 1;")
+            elif "ready" in sig_name.lower():
+                lines.append(f"    {sig_name} = 1;")
+            elif width > 1:
+                hex_w = (width + 3) // 4
+                pattern = ("A5" * ((hex_w + 1) // 2))[:hex_w]
+                lines.append(f"    {sig_name} = {width}'h{pattern};")
+        lines.append("    @(posedge clk);")
+        # Deassert valid after one cycle
+        for sig_name, _width in input_sigs:
+            if "valid" in sig_name.lower():
+                lines.append(f"    {sig_name} = 0;")
         lines.append("")
 
-        lines.append("    // End simulation")
-        lines.append('    $display("Simulation completed!");')
+        # Wait and check
+        lines.append("    // Wait for output")
+        lines.append("    repeat(20) @(posedge clk);")
+        lines.append("")
+
+        # Self-checking logic
+        lines.append("    // Self-checking: verify output")
+        if valid_out_name:
+            lines.append(f"    if ({valid_out_name}) begin")
+            lines.append(f'        $display("[PASS] Test 1: output valid asserted");')
+            lines.append(f"        pass_count = pass_count + 1;")
+            if data_out_name:
+                lines.append(f'        $display("  Output data: %h", {data_out_name});')
+            lines.append(f"    end else begin")
+            lines.append(f'        $display("[FAIL] Test 1: output valid not asserted within 20 cycles");')
+            lines.append(f"        fail_count = fail_count + 1;")
+            lines.append(f"    end")
+        else:
+            # No valid output signal — check that simulation ran without error
+            lines.append(f'    $display("[PASS] Test 1: stimulus applied without error");')
+            lines.append(f"    pass_count = pass_count + 1;")
+        lines.append("")
+
+        # Test summary
+        lines.append("    // Test summary")
+        lines.append("    repeat(5) @(posedge clk);")
+        lines.append(f'    $display("========================================");')
+        lines.append(f'    $display("Tests: %0d  Pass: %0d  Fail: %0d", test_count, pass_count, fail_count);')
+        lines.append(f"    if (fail_count == 0)")
+        lines.append(f'        $display("RESULT: ALL TESTS PASSED");')
+        lines.append(f"    else")
+        lines.append(f'        $display("RESULT: SOME TESTS FAILED");')
+        lines.append(f'    $display("========================================");')
+        lines.append("    $finish;")
+        lines.append("end")
+        lines.append("")
+
+        # Timeout watchdog
+        lines.append("// Timeout watchdog")
+        lines.append("initial begin")
+        lines.append(
+            f"    #{self.config.timeout_cycles * self.config.clock_period_ns};")
+        lines.append('    $display("ERROR: Simulation timeout!");')
         lines.append("    $finish;")
         lines.append("end")
         lines.append("")

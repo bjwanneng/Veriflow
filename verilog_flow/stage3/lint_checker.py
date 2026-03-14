@@ -82,6 +82,9 @@ class LintChecker:
             self._check_nba_as_combinational,
             self._check_multi_driver_conflict,
             self._check_axis_handshake_pulse,
+            # v3.3 rules — AES-128 project lessons learned
+            self._check_byte_order_comment,
+            self._check_testbench_selfcheck,
         ]
 
     def check(self, verilog_code: str, file_path: str = "<unknown>") -> LintResult:
@@ -700,4 +703,110 @@ class LintChecker:
                         line_number=cl,
                         suggestion=f'Hold "{sig}" high until "{ready_sig}" acknowledges',
                     ))
+        return issues
+
+    # ── v3.3 rules — AES-128 project lessons learned ──────────────────
+
+    def _check_byte_order_comment(self, code: str) -> List[LintIssue]:
+        """Check that crypto modules explicitly document byte order.
+
+        AES-128 project lesson: Byte order confusion (MSB-first vs LSB-first)
+        caused NIST test vector failures. This rule ensures modules handling
+        multi-byte data explicitly document their byte mapping.
+        """
+        issues = []
+        lines = code.split('\n')
+
+        # Look for crypto-related module names
+        crypto_keywords = ['aes', 'des', 'cipher', 'encrypt', 'decrypt',
+                           'crypto', 'sha', 'hash', 'sbox', 'key_expand']
+
+        module_name = None
+        has_byte_order_comment = False
+
+        for i, line in enumerate(lines, 1):
+            # Find module name
+            if not module_name:
+                m = re.search(r'module\s+(\w+)', line)
+                if m:
+                    module_name = m.group(1).lower()
+
+            # Look for byte order documentation
+            if re.search(r'byte\s*order|byte\s*mapping|MSB|LSB|s\[0\]|\[127:120\]', line, re.IGNORECASE):
+                has_byte_order_comment = True
+
+        # Check if this is a crypto module missing byte order docs
+        if module_name and any(kw in module_name for kw in crypto_keywords):
+            if not has_byte_order_comment:
+                issues.append(LintIssue(
+                    severity='warning',
+                    rule_id='BYTE_ORDER_MISSING',
+                    message=f'Crypto module "{module_name}" has no byte order documentation',
+                    line_number=1,
+                    suggestion='Add comment documenting byte order: e.g., "Byte mapping: s[0] = [127:120], s[15] = [7:0] (MSB-first)"',
+                ))
+
+        return issues
+
+    def _check_testbench_selfcheck(self, code: str) -> List[LintIssue]:
+        """Check that testbench has self-checking logic (PASS/FAIL or assertions).
+
+        AES-128 project lesson: Testbenches that only print waveforms without
+        self-checking logic waste engineer time. Every testbench must have
+        at least one PASS/FAIL check or assertion.
+        """
+        issues = []
+        lines = code.split('\n')
+
+        # Check if this looks like a testbench
+        is_testbench = False
+        module_name = None
+        for line in lines:
+            m = re.search(r'module\s+(\w+)', line)
+            if m:
+                module_name = m.group(1)
+                name_lower = module_name.lower()
+                if 'tb_' in name_lower or 'test_' in name_lower or '_tb' in name_lower:
+                    is_testbench = True
+                break
+
+        if not is_testbench:
+            return issues
+
+        # Check for self-checking mechanisms
+        has_pass = False
+        has_fail = False
+        has_assert = False
+        has_error = False
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith('//'):
+                continue
+            # Check for $display with PASS/FAIL
+            if re.search(r'\$display\([^)]*PASS', stripped, re.IGNORECASE):
+                has_pass = True
+            if re.search(r'\$display\([^)]*FAIL', stripped, re.IGNORECASE):
+                has_fail = True
+            if re.search(r'\$display\([^)]*ERROR', stripped, re.IGNORECASE):
+                has_error = True
+            # Check for assertions
+            if re.search(r'\$assert\b', stripped, re.IGNORECASE):
+                has_assert = True
+            # Check for fdisplay/write with PASS/FAIL too
+            if re.search(r'\$f?write\([^)]*PASS', stripped, re.IGNORECASE):
+                has_pass = True
+            if re.search(r'\$f?write\([^)]*FAIL', stripped, re.IGNORECASE):
+                has_fail = True
+
+        # Require at least one self-check mechanism
+        if not (has_pass or has_fail or has_assert or has_error):
+            issues.append(LintIssue(
+                severity='error',
+                rule_id='TB_NO_SELFCHECK',
+                message=f'Testbench "{module_name}" has no self-checking logic',
+                line_number=0,
+                suggestion='Add self-checking: $display("PASS"), $display("FAIL"), or $assert(...) statements',
+            ))
+
         return issues
