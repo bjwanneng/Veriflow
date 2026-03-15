@@ -18,6 +18,16 @@ from .golden_trace import (
 )
 from .validator import validate_scenario, ValidationResult, load_schema
 from .cocotb_gen import CocotbTestGenerator
+from .assertion_explainer import (
+    AssertionExplainer,
+    AssertionExplanation,
+    ViolationScenario,
+    ViolationSeverity,
+    StimulusExporter,
+    StimulusTransaction,
+    StimulusConfig,
+    Stage2SchemaValidator,
+)
 
 __all__ = [
     # YAML DSL
@@ -43,4 +53,13 @@ __all__ = [
     "load_schema",
     # Cocotb
     "CocotbTestGenerator",
+    # Stage 2 Enhanced
+    "AssertionExplainer",
+    "AssertionExplanation",
+    "ViolationScenario",
+    "ViolationSeverity",
+    "StimulusExporter",
+    "StimulusTransaction",
+    "StimulusConfig",
+    "Stage2SchemaValidator",
 ]

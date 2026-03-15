@@ -1,6 +1,7 @@
 """
-Cocotb Test Generator
-从 MicroArchSpec 和 TimingScenario 生成 cocotb 测试
+Cocotb Test Generator.
+
+Generates cocotb tests from MicroArchSpec and TimingScenario.
 """
 
 from typing import List, Dict, Any, Optional
@@ -10,9 +11,9 @@ import json
 
 class CocotbTestGenerator:
     """
-    Cocotb 测试生成器
+    Cocotb test generator.
 
-    从架构规格和时序场景生成 cocotb Python 测试文件
+    Generates cocotb Python test files from architecture specs and timing scenarios.
     """
 
     def __init__(self, output_dir: Path = Path(".")):
@@ -22,19 +23,19 @@ class CocotbTestGenerator:
     def generate_module_test(self, module_spec: Dict[str, Any],
                             clock_period_ns: float = 6.4) -> str:
         """
-        为单个模块生成基础 cocotb 测试框架
+        Generate a basic cocotb test framework for a single module.
 
         Args:
-            module_spec: 模块规格字典
-            clock_period_ns: 时钟周期（纳秒）
+            module_spec: Module specification dictionary
+            clock_period_ns: Clock period in nanoseconds
 
         Returns:
-            生成的 Python 测试代码
+            Generated Python test code
         """
         module_name = module_spec['name']
         ports = module_spec.get('ports', [])
 
-        # 找到时钟和复位信号
+        # Find clock and reset signals
         clk_port = next((p for p in ports if p.get('protocol') == 'clock'), None)
         rst_port = next((p for p in ports if p.get('protocol') == 'reset'), None)
 
@@ -95,7 +96,7 @@ async def test_{module_name}_random(dut):
     for i in range(100):
 '''
 
-        # 为输入端口生成随机激励
+        # Generate random stimulus for input ports
         input_ports = [p for p in ports if p['direction'] == 'input'
                       and p.get('protocol') not in ['clock', 'reset']]
 
@@ -119,20 +120,20 @@ async def test_{module_name}_random(dut):
                                  test_data: List[int],
                                  clock_period_ns: float = 6.4) -> str:
         """
-        为 AXI-Stream 接口模块生成测试
+        Generate test for AXI-Stream interface modules.
 
         Args:
-            module_spec: 模块规格
-            test_data: 测试数据列表
-            clock_period_ns: 时钟周期
+            module_spec: Module specification
+            test_data: List of test data values
+            clock_period_ns: Clock period in nanoseconds
 
         Returns:
-            生成的测试代码
+            Generated test code
         """
         module_name = module_spec['name']
         ports = module_spec.get('ports', [])
 
-        # 找到 AXI-Stream 端口
+        # Find AXI-Stream ports
         axi_ports = [p for p in ports if p.get('protocol') == 'axi_stream']
 
         clk_port = next((p for p in ports if p.get('protocol') == 'clock'), None)
@@ -221,16 +222,16 @@ async def test_{module_name}_axi_stream(dut):
                          top_module: str,
                          simulator: str = "icarus") -> str:
         """
-        生成 cocotb Makefile
+        Generate cocotb Makefile.
 
         Args:
-            module_name: 模块名
-            rtl_files: RTL 文件列表
-            top_module: 顶层模块名
-            simulator: 仿真器 (icarus/verilator/questa/vcs)
+            module_name: Module name
+            rtl_files: List of RTL file paths
+            top_module: Top-level module name
+            simulator: Simulator (icarus/verilator/questa/vcs)
 
         Returns:
-            Makefile 内容
+            Makefile content
         """
         verilog_sources = "\n".join([f"VERILOG_SOURCES += {f}" for f in rtl_files])
 
@@ -271,13 +272,13 @@ clean::
 
     def generate_integration_test(self, spec_dict: Dict[str, Any]) -> str:
         """
-        生成集成测试（多模块联合）
+        Generate integration test (multi-module).
 
         Args:
-            spec_dict: 完整的 MicroArchSpec 字典
+            spec_dict: Complete MicroArchSpec dictionary
 
         Returns:
-            集成测试代码
+            Integration test code
         """
         design_name = spec_dict['design_name']
         modules = spec_dict.get('modules', [])
@@ -329,14 +330,14 @@ async def test_{design_name}_integration(dut):
         return test_code
 
     def save_test(self, test_code: str, filename: str):
-        """保存测试代码到文件"""
+        """Save test code to file."""
         filepath = self.output_dir / filename
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(test_code)
         return filepath
 
     def save_makefile(self, makefile_content: str, filename: str = "Makefile"):
-        """保存 Makefile"""
+        """Save Makefile to file."""
         filepath = self.output_dir / filename
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(makefile_content)

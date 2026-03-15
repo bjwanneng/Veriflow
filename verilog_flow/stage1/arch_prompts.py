@@ -1,6 +1,7 @@
 """
-Structured Prompts for Architecture Decomposition
-结构化 Prompt 模板，引导 LLM 完成自顶向下的架构分解
+Structured Prompts for Architecture Decomposition.
+
+Prompt templates that guide the LLM through top-down architecture decomposition.
 """
 
 ARCH_PROMPTS = {
@@ -546,14 +547,14 @@ Now generate the final architecture summary.
 
 def get_prompt_for_step(step: int, context: dict) -> str:
     """
-    获取指定步骤的 prompt，并注入上下文
+    Get the prompt for a given step, with context injection.
 
     Args:
-        step: 步骤编号 (1-6)
-        context: 上下文字典，包含之前步骤的输出和其他参数
+        step: Step number (1-6)
+        context: Context dictionary containing previous step outputs and parameters
 
     Returns:
-        格式化后的 prompt 字符串
+        Formatted prompt string
     """
     prompt_key = f"step{step}_" + [
         "requirements",
