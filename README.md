@@ -1,232 +1,124 @@
-# VeriFlow-Agent 3.0
+# VeriFlow-Agent v6.0
 
-Industrial-grade Verilog code generation system with timing and micro-architecture awareness.
+工业级 Verilog RTL 设计流水线，采用**脚本编排 + LLM 执行**架构。
 
-[中文文档](verilog_flow/README.md)
+## 核心思想
 
----
+> 确定性的归脚本，创造性的归模型。
 
-## Overview
+| 职责 | 由谁负责 | 为什么 |
+|------|---------|--------|
+| Stage 顺序控制 | `veriflow_orchestrator.py` | 脚本不会跳过 stage |
+| 产出格式校验 | `veriflow_orchestrator.py` | JSON schema / lint / 编译检查 |
+| 失败重试 | `veriflow_orchestrator.py` | 最多 3 次，带错误反馈 |
+| RTL 代码生成 | Claude Code (LLM) | 创造性任务 |
+| Testbench 编写 | Claude Code (LLM) | 创造性任务 |
+| 调试修复 | Claude Code (LLM) | 需要理解错误语义 |
 
-VeriFlow-Agent 3.0 solves the classic Verilog code generation problem: **"Logically correct, physically failing"**. By adopting a "Shift-Left" philosophy, it brings micro-architecture planning and physical timing estimation before code generation, ensuring generated code is not only functionally correct but also meets industrial-grade frequency and resource constraints.
-
-### Key Features
-
-- **5-Stage Pipeline**: Complete workflow from requirements to synthesis verification
-- **YAML DSL**: Parameterized timing scenario description with JSON Schema validation
-- **Golden Trace**: Cycle-accurate reference waveforms for verification
-- **WaveDrom Integration**: Automated waveform diagram generation
-- **Skill D Analysis**: Static logic depth and CDC (Clock Domain Crossing) analysis
-- **Experience Database**: Learning from past failures and successes
-- **KPI Tracking**: Observable metrics (Pass@1, Timing Closure, Token efficiency)
-- **Project Layout Management**: Standardized `stage_N_xxx/` directory organization
-- **Coding Style System**: Vendor-specific RTL coding rules (generic / Xilinx / Intel)
-- **Stage Gate Checker**: Quality gates between pipeline stages
-- **Execution Logger**: Structured JSON run logs for traceability
-- **Post-Run Analyzer**: Self-evolution via failure pattern detection and regression analysis
-
----
-
-## Architecture
+## 7-Stage 流水线
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  Stage 1 & 1.5: Micro-Architecture Specification            │
-│    Pipeline topology, timing budget, interface protocols     │
-├──────────────────────────────────────────────────────────────┤
-│  Stage 2: Virtual Timing Modeling                            │
-│    YAML DSL scenarios, WaveDrom, Golden Trace generation     │
-├──────────────────────────────────────────────────────────────┤
-│  Stage 3 & 3.5: Code Generation & Static Analysis           │
-│    RTL generation, Lint, Skill D, CodingStyle enforcement    │
-├──────────────────────────────────────────────────────────────┤
-│  Stage 4: Physical Simulation & Verification                 │
-│    Testbench execution, waveform diff, assertion checking    │
-├──────────────────────────────────────────────────────────────┤
-│  Stage 5: Synthesis-Level Verification                       │
-│    Yosys synthesis, timing/area estimation, KPI dashboard    │
-└──────────────────────────────────────────────────────────────┘
-
-Infrastructure: ProjectLayout · CodingStyleManager · StageGateChecker
-                ExecutionLogger · PostRunAnalyzer · ExperienceDB
+Stage 0: Project Initialization     — 创建目录、检测工具链
+Stage 1: Micro-Architecture Spec    — 生成 JSON 规格文档
+Stage 2: Virtual Timing Modeling    — 生成 YAML 时序场景 + golden trace
+Stage 3: RTL Code Generation + Lint — 生成 .v 文件、lint、编译
+Stage 4: Simulation & Verification  — 单元测试 + 集成测试
+Stage 5: Synthesis Analysis          — Yosys 综合分析
+Stage 6: Closing                     — 生成最终报告
 ```
 
-Each stage has explicit input/output contracts and quality gates. If a stage fails its threshold, the flow rolls back automatically.
+## 快速开始
 
----
+### 前置条件
 
-## Installation
+- [Claude Code CLI](https://github.com/anthropics/claude-code) 已安装且在 PATH 中
+- Python 3.10+
+- iverilog + yosys（推荐 [oss-cad-suite](https://github.com/YosysHQ/oss-cad-suite-build)）
 
-### Requirements
-
-- Python 3.9+
-- (Optional) [Yosys](https://github.com/YosysHQ/yosys) — for synthesis (Stage 5)
-- (Optional) [Icarus Verilog](http://iverilog.icarus.com/) or [Verilator](https://www.veripool.org/verilator/) — for simulation (Stage 4)
-
-### Install from Source
+### 运行完整流水线
 
 ```bash
-git clone https://github.com/bjwanneng/Veriflow.git
-cd Veriflow/verilog_flow
-pip install -e ".[dev]"
+# 在项目目录下放一个 requirement.md 描述设计需求
+python veriflow_orchestrator.py --project-dir /path/to/project
 ```
 
-### Verify Installation
+### 从指定 stage 开始
 
 ```bash
-python -c "from verilog_flow import __version__; print(f'VeriFlow {__version__}')"
+# 自动检测上次完成的 stage，从下一个继续
+python veriflow_orchestrator.py -d /path/to/project
+
+# 从 Stage 3 开始
+python veriflow_orchestrator.py -d /path/to/project --start-stage 3
+
+# 只跑 Stage 4
+python veriflow_orchestrator.py -d /path/to/project --stage 4
 ```
 
----
-
-## Quick Start
-
-### Option 1: Run the Example Project
+### 预览模式
 
 ```bash
-cd example_project
-python run_all.py
+python veriflow_orchestrator.py -d /path/to/project --dry-run
 ```
 
-### Option 2: Initialize a New Project
-
-```bash
-# Initialize project directory with standard layout + coding style
-verilog-flow init --vendor xilinx
-
-# Run stage gate checks
-verilog-flow check
-
-# Run post-execution analysis
-verilog-flow analyze --runs 10
-```
-
-### Option 3: Use the Python API
-
-```python
-from verilog_flow import (
-    ProjectLayout, CodingStyleManager, StageGateChecker,
-    ExecutionLogger, PostRunAnalyzer,
-    RTLCodeGenerator, LintChecker,
-)
-from pathlib import Path
-
-# Initialize project
-layout = ProjectLayout(Path("."))
-layout.initialize()
-
-# Load coding style
-mgr = CodingStyleManager(layout)
-style = mgr.get_style("xilinx")
-
-# Generate RTL with coding style
-gen = RTLCodeGenerator(coding_style=style)
-module = gen.generate_fifo(depth=16, data_width=32)
-module.save(layout.get_dir(3, "rtl"))
-
-# Run stage gate check
-checker = StageGateChecker(layout)
-for result in checker.check_all():
-    print(f"Stage {result.stage}: {'PASS' if result.passed else 'FAIL'}")
-```
-
----
-
-## Standard Project Layout
-
-After `verilog-flow init`, the project directory looks like:
+## 目录结构
 
 ```
-project_root/
-  .veriflow/                          # Hidden metadata directory
-    logs/                             # Structured execution logs (JSON)
-    experience_db/                    # Design patterns & failure cases
-    coding_style/                     # Verilog coding style rules
-      generic/*.md
-      xilinx/*.md
-      intel/*.md
-    templates/                        # RTL code templates (.v per vendor)
-      generic/*.v                     # sync_fifo, async_fifo, fsm, ram, etc.
-      xilinx/
-      intel/
-  stage_1_spec/specs/                 # Micro-architecture spec JSON
-  stage_2_timing/                     # Virtual timing modeling
-    scenarios/                        # YAML scenarios
-    golden_traces/                    # Golden reference traces
-    waveforms/                        # WaveDrom HTML
-  stage_3_codegen/rtl/                # Generated RTL
-    common/ crypto/ tx/ rx/
-  stage_4_sim/                        # Simulation
-    tb/                               # Testbenches
-    sim/                              # Simulation outputs
-  stage_5_synth/synth/                # Per-module synthesis results
-  reports/                            # Cross-stage reports
+verilog-flow-skill/
+├── SKILL.md                      # Claude Code skill 定义（123 行）
+├── veriflow_orchestrator.py      # 主控脚本（471 行）
+├── prompts/                      # 每个 stage 的独立 prompt
+│   ├── stage0_init.md
+│   ├── stage1_spec.md
+│   ├── stage2_timing.md
+│   ├── stage3_codegen.md
+│   ├── stage4_sim.md
+│   ├── stage5_synth.md
+│   └── stage6_close.md
+└── verilog_flow/                 # Python 工具库
+    ├── common/
+    │   ├── coding_style.py       # 厂商编码风格管理
+    │   ├── requirement_validator.py  # 需求预检
+    │   ├── stage_gate.py         # Stage 门控检查
+    │   └── toolchain_detect.py   # 工具链检测
+    ├── stage3/
+    │   ├── lint_checker.py       # 17 条 regex lint 规则
+    │   └── interface_checker.py  # spec-vs-RTL 端口校验
+    ├── defaults/
+    │   ├── coding_style/         # generic / xilinx / intel 编码规范
+    │   └── templates/            # 11 个可复用 Verilog 模板
+    └── cli/main.py               # CLI 工具（validate / waveform / trace）
 ```
 
----
-
-## CLI Commands
-
-| Tool | Command | Description |
-|------|---------|-------------|
-| `verilog-flow` | `init [--vendor V]` | Initialize project directory + coding style |
-| `verilog-flow` | `check [--stage N]` | Run stage gate quality checks |
-| `verilog-flow` | `analyze [--runs N]` | Post-run analysis for self-evolution |
-| `verilog-flow` | `validate` | Validate YAML timing scenario |
-| `verilog-flow` | `waveform` | Generate WaveDrom waveform |
-| `verilog-flow` | `trace` | Generate Golden Trace |
-| `verilog-flow` | `dashboard` | Display KPI dashboard |
-| `vf-codegen` | `generate` | Generate RTL from spec |
-| `vf-codegen` | `fifo` / `handshake` | Generate standard modules |
-| `vf-codegen` | `lint` | Run lint check |
-| `vf-sim` | `run` / `diff` / `trace` | Simulation & waveform comparison |
-| `vf-synth` | `run` / `analyze` / `report` | Synthesis & timing analysis |
-
----
-
-## Project Structure
+## 项目目录结构（运行后生成）
 
 ```
-Veriflow/
-├── README.md                      # This file
-├── verilog_flow/                  # Main Python package
-│   ├── pyproject.toml             # Package configuration & dependencies
-│   ├── README.md                  # Detailed documentation (中文)
-│   ├── __init__.py                # Public API exports
-│   ├── common/                    # Shared infrastructure
-│   │   ├── project_layout.py     # Directory layout management
-│   │   ├── coding_style.py       # Coding style rules & manager
-│   │   ├── stage_gate.py         # Stage gate quality checker
-│   │   ├── execution_log.py      # Structured execution logger
-│   │   ├── post_run_analyzer.py  # Post-run self-evolution analysis
-│   │   ├── experience_db.py      # Experience database
-│   │   ├── kpi.py                # KPI tracking
-│   │   └── logger.py             # Logging utilities
-│   ├── stage1/                    # Micro-architecture specification
-│   ├── stage2/                    # Virtual timing modeling (YAML DSL)
-│   ├── stage3/                    # Code generation & static analysis
-│   ├── stage4/                    # Simulation & waveform verification
-│   ├── stage5/                    # Synthesis & timing/area analysis
-│   ├── cli/                       # CLI entry points
-│   └── examples/                  # Example YAML scenarios
-│   ├── defaults/                  # Package-level defaults (shipped with repo)
-│   │   ├── coding_style/         # Coding style docs (.md per vendor)
-│   │   └── templates/            # RTL templates (.v per vendor)
-├── verilog-flow-skill/            # Claude Code Skill integration
-│   └── SKILL.md
-└── example_project/               # End-to-end example project
+your-project/
+├── requirement.md                # 你的设计需求文档
+├── stage_1_spec/specs/           # JSON 规格文档
+├── stage_2_timing/
+│   ├── scenarios/                # YAML 时序场景
+│   └── golden_traces/            # 期望值 trace
+├── stage_3_codegen/rtl/          # 生成的 .v 文件
+├── stage_4_sim/
+│   ├── tb/                       # Testbench 文件
+│   └── sim_output/               # 仿真日志
+├── stage_5_synth/                # 综合脚本和报告
+├── reports/                      # 最终报告
+└── .veriflow/
+    └── stage_completed/          # Stage 完成标记
 ```
 
----
+## 与 v5.0 的区别
 
-## Dependencies
-
-Core (auto-installed): `pyyaml`, `jsonschema`, `jinja2`, `click`, `rich`, `pydantic`
-
-Optional groups: `dev` (testing/linting), `docs` (Sphinx), `eda` (cocotb)
-
----
+| 维度 | v5.0 | v6.0 |
+|------|------|------|
+| 流程控制 | LLM 读 500 行规则自行控制 | Python 脚本硬编码控制 |
+| 每次 LLM 上下文 | 500+ 行规则 + 长对话 | ~50 行 stage prompt |
+| 产出校验 | 靠 LLM 自觉 | 脚本强制校验（lint/compile/schema） |
+| 失败恢复 | LLM 可能越改越乱 | 脚本控制重试 + 错误反馈 |
+| Stage 跳过风险 | 高（注意力衰减） | 零（脚本不允许） |
 
 ## License
 
-MIT License
+MIT

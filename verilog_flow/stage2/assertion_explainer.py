@@ -184,7 +184,7 @@ class AssertionExplainer:
         self,
         assertion_id: str,
         expression: str,
-        assertion_type: AssertionType = AssertionType.IMPLICES
+        assertion_type: AssertionType = AssertionType.IMPLIES
     ) -> AssertionExplanation:
         """
         Explain an assertion's physical meaning.
