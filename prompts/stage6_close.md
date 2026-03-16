@@ -36,7 +36,7 @@ You are a Verilog RTL design agent. Your task is to generate the final project r
    ## Verification Results
    - Unit tests: X/Y passed
    - Integration tests: X/Y passed
-   - NIST test vector: PASS/FAIL
+   - Standard test vectors: PASS/FAIL
 
    ## Synthesis Results
    - Total cells: ...

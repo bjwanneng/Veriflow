@@ -1,6 +1,6 @@
 # Stage 3: RTL Code Generation + Lint
 
-You are a Verilog RTL design agent. Your task is to generate all RTL modules and ensure they compile cleanly.
+You are a Verilog RTL design agent. Your task is to generate all RTL modules AND auto-generated testbenches, and ensure they compile cleanly.
 
 ## Working Directory
 {{PROJECT_DIR}}
@@ -8,10 +8,16 @@ You are a Verilog RTL design agent. Your task is to generate all RTL modules and
 ## Spec JSON
 {{SPEC_JSON}}
 
-## Coding Style Rules
-- File wrapper: `resetall / timescale 1ns/1ps / default_nettype none / module / endmodule / resetall
-- Reset: async active-low `rst_n`, `always @(posedge clk or negedge rst_n)`
-- Naming: snake_case modules/signals, UPPER_CASE parameters
+## Provided Architecture Design Specification (Spec JSON)
+{{SPEC_JSON}}
+
+## Vendor/Generic Coding Style Rules
+{{CODING_STYLE}}
+
+## Available Code Templates
+{{TEMPLATES}}
+
+## Mandatory Base Coding Style Constraints
 - ANSI port style, 4-space indent
 - Combinational: `always @*` with blocking `=`, default assignments at top
 - Sequential: non-blocking `<=` only
@@ -24,34 +30,343 @@ You are a Verilog RTL design agent. Your task is to generate all RTL modules and
 
 ## Tasks
 
-1. Read the spec JSON from `stage_1_spec/specs/`.
+### 1. Read Specification JSON
 
-2. For EVERY module in the spec `modules` array, generate a complete .v file under `stage_3_codegen/rtl/`.
-   - No placeholder code, no TODO comments, no empty module bodies
-   - All lookup tables fully expanded (e.g., full 256-entry S-Box)
-   - All pipeline registers explicitly coded
+Read the specification JSON file from `stage_1_spec/specs/`.
 
-3. After generating all files, compile them together:
-   ```bash
-   export PATH="/c/oss-cad-suite/bin:/c/oss-cad-suite/lib:$PATH"
-   iverilog -g2005 -Wall -o /dev/null stage_3_codegen/rtl/*.v
-   ```
+### 2. Generate All RTL Modules
 
-4. If compilation fails, read the error messages, fix the issues, and recompile. Repeat until 0 errors.
+For EVERY module in spec `modules` array, generate complete .v file in `stage_3_codegen/rtl/`:
+- No placeholder code, no TODO comments, no empty module bodies
+- All lookup tables fully expanded
+- All pipeline registers explicitly coded
 
-5. Common errors and fixes:
-   - `cannot be driven by continuous assignment` → change `reg` to `wire`
-   - `Unable to bind wire/reg/memory` → move declaration before use
-   - `Variable declaration in unnamed block` → name the block or move to module level
-   - Bit-width mismatch → check port widths match spec
+#### Module Generation Checklist
+For each module in spec JSON:
+- [ ] Check if corresponding .v file exists
+- [ ] Check module name matches
+- [ ] Check port list matches spec
+- [ ] Check port direction and width are consistent
+
+#### RTL Module Template Structure
+```verilog
+`resetall
+`timescale 1ns/1ps
+`default_nettype none
+
+module module_name #(
+    parameter PARAM_NAME = 32
+) (
+    input  wire clk,
+    input  wire rst_n,
+    // Other ports...
+    output wire [31:0] o_data
+);
+
+// Local parameter declarations
+localparam LP_NAME = 8;
+
+// Internal signal declarations
+wire [7:0] sig_name;
+reg [7:0] reg_name;
+
+// Combinational logic
+always @* begin
+    // Default assignments
+    sig_name = 8'h00;
+    // Logic implementation
+    case (...)
+        // ...
+    endcase
+end
+
+// Sequential logic
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        reg_name <= 8'h00;
+    end else begin
+        reg_name <= sig_name;
+    end
+end
+
+// Continuous assignment outputs
+assign o_data = {reg_name, ...};
+
+endmodule
+`resetall
+```
+
+### 3. Generate Automatic Testbench (NEW)
+
+Generate testbench for each module in `stage_3_codegen/tb_autogen/`:
+
+#### 3.1 Generate Unit Testbench for Each Non-Top Module
+
+Create `tb_<module_name>.v` with the following structure:
+
+```verilog
+`resetall
+`timescale 1ns/1ps
+`default_nettype none
+
+module tb_module_name;
+
+    reg clk;
+    reg rst_n;
+
+    // DUT signal declarations
+    reg [7:0] i_byte;
+    wire [7:0] o_byte;
+    // ... other signals
+
+    // DUT instantiation
+    module_name dut (
+        .clk(clk),
+        .rst_n(rst_n),
+        .i_byte(i_byte),
+        .o_byte(o_byte)
+        // ... other ports
+    );
+
+    // Clock generation (300MHz = 3.33ns period)
+    initial begin
+        clk = 0;
+        forever #1.665 clk = ~clk;
+    end
+
+    // VCD dump
+    initial begin
+        $dumpfile("tb_module_name.vcd");
+        $dumpvars(0, tb_module_name);
+    end
+
+    // Test sequence
+    initial begin
+        $display("========================================");
+        $display("  Testbench for module_name");
+        $display("========================================");
+
+        // Reset
+        rst_n = 0;
+        i_byte = 8'h00;
+        // Initialize other inputs...
+
+        repeat(10) @(posedge clk);
+        rst_n = 1;
+        repeat(5) @(posedge clk);
+
+        $display("[INFO] Reset complete");
+
+        // Run tests
+        run_test_basic();
+        run_test_cases();
+
+        $display("========================================");
+        $display("  ALL TESTS PASSED");
+        $display("========================================");
+        $finish;
+    end
+
+    // Watchdog timer
+    initial begin
+        #100000;
+        $display("[TIMEOUT] Simulation timed out after 100us");
+        $finish;
+    end
+
+    // Basic functionality test task
+    task run_test_basic;
+        begin
+            $display("[TEST] Basic functionality");
+            // Test code...
+            $display("[PASS] Basic functionality");
+        end
+    endtask
+
+    // Specific test case task
+    task run_test_cases;
+        begin
+            $display("[TEST] Test cases");
+            // Test code...
+            $display("[PASS] Test cases");
+        end
+    endtask
+
+endmodule
+`resetall
+```
+
+#### 3.2 Generate Integration Testbench for Top Module
+
+Create `tb_<design_name>_top.v` including:
+- Standard test vectors from requirements
+- Basic operation tests
+- Continuous data tests
+- Configuration mode tests (if applicable)
+
+```verilog
+`resetall
+`timescale 1ns/1ps
+`default_nettype none
+
+module tb_design_top;
+
+    // Standard test vectors
+    localparam [31:0] TEST_INPUT    = 32'h12345678;
+    localparam [31:0] TEST_EXPECTED  = 32'h87654321;
+
+    reg clk;
+    reg rst_n;
+    reg [31:0] i_data;
+    reg i_valid;
+    wire [31:0] o_data;
+    wire o_valid;
+
+    // DUT instantiation
+    design_top dut (
+        .clk(clk),
+        .rst_n(rst_n),
+        .i_data(i_data),
+        .i_valid(i_valid),
+        .o_data(o_data),
+        .o_valid(o_valid)
+    );
+
+    // Clock generation (300MHz)
+    initial begin
+        clk = 0;
+        forever #1.665 clk = ~clk;
+    end
+
+    // VCD dump
+    initial begin
+        $dumpfile("tb_design_top.vcd");
+        $dumpvars(0, tb_design_top);
+    end
+
+    // Main test sequence
+    initial begin
+        $display("========================================");
+        $display("  Design Testbench");
+        $display("========================================");
+
+        // Initialize
+        rst_n = 0;
+        i_data = 32'h0;
+        i_valid = 0;
+
+        repeat(10) @(posedge clk);
+        rst_n = 1;
+        repeat(5) @(posedge clk);
+
+        $display("[INFO] Reset complete");
+
+        // Run tests
+        test_basic_operation();
+        test_back_to_back();
+
+        $display("========================================");
+        $display("  ALL TESTS PASSED");
+        $display("========================================");
+        $finish;
+    end
+
+    // Watchdog
+    initial begin
+        #100000;
+        $display("[TIMEOUT] Simulation timed out");
+        $finish;
+    end
+
+    // Basic operation test
+    task test_basic_operation;
+        begin
+            $display("[TEST] Basic Operation");
+            i_data = TEST_INPUT;
+            i_valid = 1;
+
+            @(posedge clk);
+            i_valid = 0;
+
+            // Wait pipeline latency
+            repeat(5) @(posedge clk);
+
+            if (o_valid !== 1) begin
+                $display("[FAIL] o_valid not high");
+                $finish;
+            end
+
+            if (o_data !== TEST_EXPECTED) begin
+                $display("[FAIL] Output mismatch");
+                $display("  Expected: %h", TEST_EXPECTED);
+                $display("  Got:      %h", o_data);
+                $finish;
+            end
+
+            $display("[PASS] Basic Operation");
+        end
+    endtask
+
+    // Back-to-back test
+    task test_back_to_back;
+        begin
+            $display("[TEST] Back-to-back packets");
+            // Test continuous input...
+            $display("[PASS] Back-to-back");
+        end
+    endtask
+
+endmodule
+`resetall
+```
+
+### 4. Compile All RTL Files
+
+After generating all files, compile together:
+
+```bash
+# Add path on Windows
+export PATH="/c/oss-cad-suite/bin:/c/oss-cad-suite/lib:$PATH"
+iverilog -g2005 -Wall -o /dev/null stage_3_codegen/rtl/*.v
+```
+
+### 5. Compile Automatic Testbench
+
+```bash
+iverilog -g2005 -Wall -o /dev/null stage_3_codegen/rtl/*.v stage_3_codegen/tb_autogen/*.v
+```
+
+### 6. Error Fixing
+
+If compilation fails, read error messages, fix issues, then recompile. Repeat until 0 errors.
+
+Common errors and fixes:
+- `cannot be driven by continuous assignment` → Change `reg` to `wire`
+- `Unable to bind wire/reg/memory` → Move declaration before use
+- `Variable declaration in unnamed block` → Name the block or move to module level
+- Width mismatch → Check if port widths match spec
+
+## Stage 3 Output Directory Structure
+```
+stage_3_codegen/
+├── rtl/
+│   ├── module1.v
+│   ├── module2.v
+│   └── design_top.v
+└── tb_autogen/
+    ├── tb_module1.v
+    ├── tb_module2.v
+    └── tb_design_top.v
+```
 
 ## Constraints
-- Generate ALL modules from the spec — no missing files
-- Every .v file must be complete and synthesizable
+- Generate ALL modules from spec — no missing files
+- Each .v file must be complete and synthesizable
 - Must compile with `iverilog -g2005 -Wall` with 0 errors
-- Do NOT generate testbench files (that's Stage 4)
+- Must generate testbench for each module
+- Top testbench must include standard test vectors
 
 ## Output
-Print: files generated (list), compilation result (PASS/FAIL), any warnings.
+Print: list of generated files (RTL and testbench), compilation results (PASS/FAIL), any warnings.
 
 {{EXTRA_CONTEXT}}

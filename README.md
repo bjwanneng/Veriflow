@@ -1,73 +1,87 @@
-# VeriFlow-Agent v6.0
+# VeriFlow-Agent v8.0
 
-工业级 Verilog RTL 设计流水线，采用**脚本编排 + LLM 执行**架构。
+工业级 Verilog RTL 设计流水线 — **脚本做门禁，LLM 做执行**。
 
-## 核心思想
+## 核心架构
 
-> 确定性的归脚本，创造性的归模型。
+```
+Claude Code (LLM)          veriflow_ctl.py (脚本)
+    │                            │
+    │  1. 调用 next             │
+    │ ─────────────────────────>│ 检查前置 stage → 输出 prompt
+    │                            │
+    │  2. 执行 stage 任务        │
+    │  (生成代码/spec/TB...)     │
+    │                            │
+    │  3. 调用 validate          │
+    │ ─────────────────────────>│ 确定性检查 → PASS/FAIL
+    │                            │
+    │  4. 调用 complete          │
+    │ ─────────────────────────>│ 验证通过才标记完成
+    │                            │
+    │  回到 1                    │
+```
 
-| 职责 | 由谁负责 | 为什么 |
-|------|---------|--------|
-| Stage 顺序控制 | `veriflow_orchestrator.py` | 脚本不会跳过 stage |
-| 产出格式校验 | `veriflow_orchestrator.py` | JSON schema / lint / 编译检查 |
-| 失败重试 | `veriflow_orchestrator.py` | 最多 3 次，带错误反馈 |
-| RTL 代码生成 | Claude Code (LLM) | 创造性任务 |
-| Testbench 编写 | Claude Code (LLM) | 创造性任务 |
-| 调试修复 | Claude Code (LLM) | 需要理解错误语义 |
+LLM 负责创造性工作（写 Verilog、设计架构、调试），脚本负责"能不能过"的硬判断。LLM 无法跳过 stage、无法绕过验证。
 
 ## 7-Stage 流水线
 
-```
-Stage 0: Project Initialization     — 创建目录、检测工具链
-Stage 1: Micro-Architecture Spec    — 生成 JSON 规格文档
-Stage 2: Virtual Timing Modeling    — 生成 YAML 时序场景 + golden trace
-Stage 3: RTL Code Generation + Lint — 生成 .v 文件、lint、编译
-Stage 4: Simulation & Verification  — 单元测试 + 集成测试
-Stage 5: Synthesis Analysis          — Yosys 综合分析
-Stage 6: Closing                     — 生成最终报告
-```
+| Stage | 名称 | 关键产出 |
+|-------|------|----------|
+| 0 | Project Initialization | 目录结构, project_config.json |
+| 1 | Micro-Architecture Spec | `stage_1_spec/specs/*_spec.json` |
+| 2 | Virtual Timing Modeling | YAML 场景, golden trace, Cocotb 测试 |
+| 3 | RTL Code Generation + Lint | `stage_3_codegen/rtl/*.v`, 自动 testbench |
+| 4 | Simulation & Verification | 单元/集成测试, 仿真日志 (全 PASS) |
+| 5 | Synthesis Analysis | Yosys 综合, synth_report.json |
+| 6 | Closing | `reports/final_report.md` |
 
-## 快速开始
+## 使用方式
 
 ### 前置条件
 
-- [Claude Code CLI](https://github.com/anthropics/claude-code) 已安装且在 PATH 中
+- Claude Code CLI 已安装
 - Python 3.10+
 - iverilog + yosys（推荐 [oss-cad-suite](https://github.com/YosysHQ/oss-cad-suite-build)）
 
-### 运行完整流水线
+### 作为 Claude Code Skill 使用（推荐）
+
+1. 将本目录放在 `~/.claude/skills/verilog-flow-skill/`
+2. 在项目目录下创建 `requirement.md` 描述设计需求
+3. 在 Claude Code 中提及 Verilog/RTL 设计，skill 自动触发
+4. Claude Code 按照 SKILL.md 中的循环协议自动执行全流程
+
+### 手动使用 veriflow_ctl.py
 
 ```bash
-# 在项目目录下放一个 requirement.md 描述设计需求
-python veriflow_orchestrator.py --project-dir /path/to/project
-```
+CTL="~/.claude/skills/verilog-flow-skill/veriflow_ctl.py"
 
-### 从指定 stage 开始
+# 查看进度
+python $CTL status -d ./my_project
 
-```bash
-# 自动检测上次完成的 stage，从下一个继续
-python veriflow_orchestrator.py -d /path/to/project
+# 获取下一个 stage 的任务 prompt
+python $CTL next -d ./my_project
 
-# 从 Stage 3 开始
-python veriflow_orchestrator.py -d /path/to/project --start-stage 3
+# 验证 stage 产出
+python $CTL validate -d ./my_project 3
 
-# 只跑 Stage 4
-python veriflow_orchestrator.py -d /path/to/project --stage 4
-```
+# 标记 stage 完成（验证不过会拒绝）
+python $CTL complete -d ./my_project 3
 
-### 预览模式
+# 回退到某个 stage
+python $CTL rollback -d ./my_project 1
 
-```bash
-python veriflow_orchestrator.py -d /path/to/project --dry-run
+# 查看 stage 详情
+python $CTL info -d ./my_project 3
 ```
 
 ## 目录结构
 
 ```
 verilog-flow-skill/
-├── SKILL.md                      # Claude Code skill 定义（123 行）
-├── veriflow_orchestrator.py      # 主控脚本（471 行）
-├── prompts/                      # 每个 stage 的独立 prompt
+├── SKILL.md                          # Claude Code skill 定义
+├── veriflow_ctl.py                   # 门禁控制器（status/next/validate/complete/rollback）
+├── prompts/                          # 每个 stage 的任务 prompt
 │   ├── stage0_init.md
 │   ├── stage1_spec.md
 │   ├── stage2_timing.md
@@ -75,49 +89,38 @@ verilog-flow-skill/
 │   ├── stage4_sim.md
 │   ├── stage5_synth.md
 │   └── stage6_close.md
-└── verilog_flow/                 # Python 工具库
+└── verilog_flow/
     ├── common/
-    │   ├── coding_style.py       # 厂商编码风格管理
-    │   ├── requirement_validator.py  # 需求预检
-    │   ├── stage_gate.py         # Stage 门控检查
-    │   └── toolchain_detect.py   # 工具链检测
-    ├── stage3/
-    │   ├── lint_checker.py       # 17 条 regex lint 规则
-    │   └── interface_checker.py  # spec-vs-RTL 端口校验
+    │   ├── kpi.py                    # KPI 追踪（Pass@1, 时序收敛率）
+    │   └── experience_db.py          # 经验库（失败案例记录与检索）
     ├── defaults/
-    │   ├── coding_style/         # generic / xilinx / intel 编码规范
-    │   └── templates/            # 11 个可复用 Verilog 模板
-    └── cli/main.py               # CLI 工具（validate / waveform / trace）
+    │   ├── coding_style/             # generic / xilinx / intel 编码规范
+    │   └── templates/                # 11 个可复用 Verilog 模板
+    └── stage1/schemas/
+        └── arch_spec_v2.json         # 架构规格 JSON Schema
 ```
 
 ## 项目目录结构（运行后生成）
 
 ```
 your-project/
-├── requirement.md                # 你的设计需求文档
-├── stage_1_spec/specs/           # JSON 规格文档
+├── requirement.md                    # 设计需求文档（用户提供）
+├── stage_1_spec/specs/               # JSON 架构规格
 ├── stage_2_timing/
-│   ├── scenarios/                # YAML 时序场景
-│   └── golden_traces/            # 期望值 trace
-├── stage_3_codegen/rtl/          # 生成的 .v 文件
+│   ├── scenarios/                    # YAML 时序场景
+│   ├── golden_traces/                # 期望值 trace
+│   └── cocotb/                       # Cocotb 测试文件
+├── stage_3_codegen/
+│   ├── rtl/                          # 生成的 .v 文件
+│   └── tb_autogen/                   # 自动生成的 testbench
 ├── stage_4_sim/
-│   ├── tb/                       # Testbench 文件
-│   └── sim_output/               # 仿真日志
-├── stage_5_synth/                # 综合脚本和报告
-├── reports/                      # 最终报告
+│   ├── tb/                           # Testbench 文件
+│   └── sim_output/                   # 仿真日志
+├── stage_5_synth/                    # 综合脚本和报告
+├── reports/                          # 最终报告 + stage 摘要
 └── .veriflow/
-    └── stage_completed/          # Stage 完成标记
+    └── stage_completed/              # Stage 完成标记（门禁依据）
 ```
-
-## 与 v5.0 的区别
-
-| 维度 | v5.0 | v6.0 |
-|------|------|------|
-| 流程控制 | LLM 读 500 行规则自行控制 | Python 脚本硬编码控制 |
-| 每次 LLM 上下文 | 500+ 行规则 + 长对话 | ~50 行 stage prompt |
-| 产出校验 | 靠 LLM 自觉 | 脚本强制校验（lint/compile/schema） |
-| 失败恢复 | LLM 可能越改越乱 | 脚本控制重试 + 错误反馈 |
-| Stage 跳过风险 | 高（注意力衰减） | 零（脚本不允许） |
 
 ## License
 

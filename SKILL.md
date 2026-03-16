@@ -1,123 +1,88 @@
 ---
 name: verilog-flow-skill
-description: Industrial-grade Verilog design pipeline with script-controlled orchestration and LLM-executed stages. Use when working with Verilog/RTL design, FPGA/ASIC development, hardware verification, or when the user mentions Verilog code generation, testbench generation, or hardware design workflows.
+description: Industrial-grade Verilog design pipeline with script-controlled orchestration and LLM-executed stages. Use when working with Verilog/RTL design, FPGA/ASIC development, hardware verification, or when you mention Verilog code generation, testbench generation, or hardware design workflows.
 license: MIT
 metadata:
   author: VeriFlow Team
-  version: "6.0.0"
+  version: "8.0.0"
   category: hardware-design
 ---
 
-# VeriFlow-Agent 6.0 — Orchestrator Architecture
+# VeriFlow-Agent 8.0 — Gate-Controlled Pipeline
 
-## Architecture Change (v6.0)
+Architecture: **Script as gatekeeper, LLM as executor.**
+- `veriflow_ctl.py` enforces stage ordering, prerequisites, and validation gates
+- You (Claude Code) drive the flow and execute each stage's creative tasks
+- You cannot skip stages or mark incomplete work as done — the script prevents it
 
-Previous versions (v3–v5) relied on the LLM to control the entire 7-stage workflow via prompt rules. This caused:
-- Stage skipping and rule violations in long conversations
-- Attention decay on 500+ lines of rules
-- Inconsistent output formats
+## Pipeline Stages
 
-**v6.0 solution**: A Python orchestrator script controls stage sequencing and validation. Claude Code acts as the execution agent within each stage, receiving a focused, short prompt with only the rules relevant to that stage.
+| Stage | Name | Key Output |
+|-------|------|------------|
+| 0 | Project Initialization | Directory structure, project_config.json |
+| 1 | Micro-Architecture Spec | `stage_1_spec/specs/*_spec.json` |
+| 2 | Virtual Timing Modeling | YAML scenarios, golden traces, Cocotb tests |
+| 3 | RTL Code Generation + Lint | `stage_3_codegen/rtl/*.v`, testbenches |
+| 4 | Simulation & Verification | Testbenches, sim logs (all PASS) |
+| 5 | Synthesis Analysis | Yosys synthesis, synth_report.json |
+| 6 | Closing | `reports/final_report.md` |
 
+## EXECUTION PROTOCOL
+
+**You MUST follow this exact loop. Do NOT deviate.**
+
+The controller script path is:
 ```
-veriflow_orchestrator.py (deterministic control)
-  ├── Stage 0: claude -p prompts/stage0_init.md
-  │   └── validate_stage(0) ← script checks dirs/config exist
-  ├── Stage 1: claude -p prompts/stage1_spec.md
-  │   └── validate_stage(1) ← script checks JSON schema + requirement validation
-  ├── Stage 2: claude -p prompts/stage2_timing.md
-  │   └── validate_stage(2) ← script checks YAML scenarios exist
-  ├── Stage 3: claude -p prompts/stage3_codegen.md
-  │   └── validate_stage(3) ← script runs lint + iverilog compilation
-  ├── Stage 4: claude -p prompts/stage4_sim.md
-  │   └── validate_stage(4) ← script checks sim logs for PASS/FAIL
-  ├── Stage 5: claude -p prompts/stage5_synth.md
-  │   └── validate_stage(5) ← script checks synthesis output
-  └── Stage 6: claude -p prompts/stage6_close.md
-      └── validate_stage(6) ← script checks final report
+CTL="C:\Users\wanneng.zhang\.claude\skills\verilog-flow-skill\veriflow_ctl.py"
 ```
 
-## How to Use
+### Loop: repeat until all stages complete
 
-### Option A: Run the full pipeline
+**Step 1 — Get next stage prompt**
 ```bash
-python veriflow_orchestrator.py --project-dir /path/to/project
+python "$CTL" next -d "PROJECT_DIR"
 ```
+- If output starts with `BLOCKED:` → a prerequisite stage is incomplete. Fix it first.
+- If output starts with `ALL_STAGES_COMPLETE` → pipeline is done. Stop.
+- Otherwise, the output contains `---BEGIN_PROMPT---` ... `---END_PROMPT---` with the full task instructions.
 
-### Option B: Run a single stage
+**Step 2 — Execute the tasks**
+Read the prompt output from Step 1 and execute ALL tasks described in it. This is where you do the real work: generate specs, write Verilog, create testbenches, run simulations, etc.
+
+**Step 3 — Validate**
 ```bash
-python veriflow_orchestrator.py --project-dir /path/to/project --stage 3
+python "$CTL" validate -d "PROJECT_DIR" STAGE_NUMBER
 ```
+- If `VALIDATION_PASSED` → proceed to Step 4.
+- If `VALIDATION_FAILED` → read the errors, fix them, then re-run validate. Do NOT proceed until validation passes.
 
-### Option C: Resume from last completed stage
+**Step 4 — Mark complete**
 ```bash
-python veriflow_orchestrator.py --project-dir /path/to/project
-# Auto-detects last completed stage and continues from there
+python "$CTL" complete -d "PROJECT_DIR" STAGE_NUMBER
+```
+- If `STAGE_COMPLETE` → go back to Step 1 for the next stage.
+- If `REFUSED` → validation failed internally. Fix errors and retry.
+
+**Step 5 — (If needed) Ask user before proceeding to next stage**
+For stages 1-5, use AskUserQuestion to confirm with the user before moving to the next stage. Show them a brief summary of what was accomplished.
+
+### Rollback (when stuck)
+If a stage repeatedly fails and the root cause is in an earlier stage:
+```bash
+python "$CTL" rollback -d "PROJECT_DIR" TARGET_STAGE
+```
+This clears all completion markers after TARGET_STAGE. Then resume the loop from Step 1.
+
+### Check progress anytime
+```bash
+python "$CTL" status -d "PROJECT_DIR"
 ```
 
-### Option D: Use within Claude Code session (manual mode)
-If the user invokes this skill within a Claude Code session (not via the orchestrator), follow these rules:
+## IMPORTANT RULES
 
-1. Check `.veriflow/stage_completed/` to find the last completed stage
-2. Read the appropriate prompt file from `prompts/stageN_*.md`
-3. Execute that stage's tasks
-4. The orchestrator's validation logic is in `veriflow_orchestrator.py` — you can read it to understand what will be checked
-
-## Key Design Principles
-
-1. **Script controls flow** — stage ordering, retry logic, and validation are deterministic
-2. **LLM controls content** — RTL generation, testbench creation, debugging are creative tasks for the agent
-3. **Short focused prompts** — each stage prompt is ~50 lines, not 500
-4. **Validation between stages** — script catches errors before they propagate
-5. **Retry with feedback** — if validation fails, the error is fed back to the LLM for correction (max 3 retries)
-
-## File Layout
-
-```
-verilog-flow-skill/
-├── SKILL.md                          ← this file
-├── veriflow_orchestrator.py          ← main orchestrator script
-├── prompts/
-│   ├── stage0_init.md                ← focused prompt for Stage 0
-│   ├── stage1_spec.md                ← focused prompt for Stage 1
-│   ├── stage2_timing.md              ← focused prompt for Stage 2
-│   ├── stage3_codegen.md             ← focused prompt for Stage 3
-│   ├── stage4_sim.md                 ← focused prompt for Stage 4
-│   ├── stage5_synth.md               ← focused prompt for Stage 5
-│   └── stage6_close.md               ← focused prompt for Stage 6
-└── verilog_flow/                     ← Python utilities (lint, validation, etc.)
-    ├── common/
-    │   ├── requirement_validator.py  ← pre-generation spec validation
-    │   ├── stage_gate.py             ← stage gate checks
-    │   └── lint_checker.py → stage3/
-    ├── stage3/
-    │   ├── lint_checker.py           ← 17-rule regex lint
-    │   └── interface_checker.py      ← spec-vs-RTL port validation
-    └── defaults/
-        ├── coding_style/             ← vendor coding style docs
-        └── templates/                ← reusable Verilog templates
-```
-
-## Coding Style (Quick Reference)
-
-For the LLM agent within each stage:
-
-- Verilog-2005 only (no SystemVerilog)
-- `resetall` / `timescale 1ns/1ps` / `default_nettype none` / module / endmodule / `resetall`
-- Async active-low reset: `always @(posedge clk or negedge rst_n)`
-- snake_case signals, UPPER_CASE parameters, ANSI ports, 4-space indent
-- Combinational: `always @*` with `=`, sequential: `<=`
-- `output wire` + `assign`, never `output reg`
-- No placeholders, no TODO, no truncated lookup tables
-- Crypto modules: document byte order in comments
-
-## Error Reference
-
-| Error | Fix |
-|-------|-----|
-| `cannot be driven by continuous assignment` | Change `reg` to `wire` |
-| `Unable to bind wire/reg/memory` | Move declaration before use |
-| `Variable declaration in unnamed block` | Name the block or move to module level |
-| Simulation hangs | Add `$finish` and timeout watchdog |
-| NIST test vector fails | Check byte order: s[0]=[127:120], s[15]=[7:0] |
-| Exit code 127 on Windows | Add oss-cad-suite/lib to PATH |
+1. **Always use the controller** — never manually create `.veriflow/stage_completed/` marker files
+2. **Never skip validation** — always run `validate` before `complete`
+3. **Fix errors in-place** — if validation fails, fix the files and re-validate; do not move on
+4. **One stage at a time** — the controller enforces sequential execution
+5. **requirement.md** — the project directory must contain a `requirement.md` file describing the design
+6. **Windows PATH** — for iverilog/yosys, add to PATH: `export PATH="/c/oss-cad-suite/bin:/c/oss-cad-suite/lib:$PATH"`

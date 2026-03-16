@@ -13,41 +13,85 @@ You are a Verilog RTL design agent. Your task is to initialize a VeriFlow projec
 
 ## Tasks
 
-1. Create the following directory structure:
-   ```
-   stage_1_spec/specs/
-   stage_2_timing/scenarios/
-   stage_2_timing/golden_traces/
-   stage_2_timing/waveforms/
-   stage_3_codegen/rtl/
-   stage_4_sim/tb/
-   stage_4_sim/sim_output/
-   stage_5_synth/
-   .veriflow/stage_completed/
-   .veriflow/approvals/
-   .veriflow/logs/
-   reports/
-   ```
+### 1. Mode Selection
 
-2. Detect toolchain versions by running:
-   - `iverilog -V` (add C:\oss-cad-suite\bin and C:\oss-cad-suite\lib to PATH if on Windows)
-   - `yosys -V`
+First, ask the user to select the execution mode using AskUserQuestion tool:
 
-3. Create `.veriflow/project_config.json` with:
-   - `project`: design name from requirement
-   - `vendor`: "generic"
-   - `target_frequency_mhz`: from requirement (default 300)
-   - `toolchain`: detected versions
-   - `coding_style`: async_active_low reset (rst_n), posedge clk, snake_case, ANSI ports, 4-space indent
+Question: "Please select project execution mode"
+Options:
+  - Automatic: Auto-decision based on best practices, for rapid prototyping
+  - Parameterized: User confirmation required at key decision points, for fine-grained control
 
-4. Read the requirement document and summarize key design parameters.
+### 2. Create Directory Structure
+
+Create the following directory structure:
+```
+stage_1_spec/specs/
+stage_1_spec/docs/
+stage_2_timing/scenarios/
+stage_2_timing/golden_traces/
+stage_2_timing/waveforms/
+stage_2_timing/cocotb/
+stage_3_codegen/rtl/
+stage_3_codegen/tb_autogen/
+stage_4_sim/tb/
+stage_4_sim/sim_output/
+stage_5_synth/
+.veriflow/stage_completed/
+.veriflow/approvals/
+.veriflow/logs/
+reports/
+```
+
+### 3. Detect Toolchain
+
+Detect toolchain versions:
+- `iverilog -V` (add C:\oss-cad-suite\bin and C:\oss-cad-suite\lib to PATH if on Windows)
+- `yosys -V`
+
+### 4. Create Project Config
+
+Create `.veriflow/project_config.json` with:
+
+```json
+{
+  "project": "<design_name_from_requirements>",
+  "vendor": "generic",
+  "target_frequency_mhz": <from_requirements_default_300>,
+  "execution_mode": "<user_selected_mode: automatic|parameterized>",
+  "auto_approve": {
+    "module_partition": <true_for_automatic_false_for_parameterized>,
+    "interface_def": <true_for_automatic_false_for_parameterized>,
+    "code_style": <true_for_automatic_false_for_parameterized>
+  },
+  "toolchain": <detected_toolchain_versions>,
+  "coding_style": {
+    "reset": "async_active_low",
+    "reset_signal": "rst_n",
+    "clock_edge": "posedge",
+    "naming": "snake_case",
+    "port_style": "ANSI",
+    "indent": 4
+  },
+  "user_preferences": {
+    "preferred_coding_style": "generic",
+    "include_comments": true,
+    "include_assertions": true
+  }
+}
+```
+
+### 5. Read Requirements and Summarize
+
+Read requirement.md and summarize key design parameters.
 
 ## Constraints
 - Do NOT create any .v files
-- Do NOT start any design work
+- Do NOT start any design work before mode selection
 - Only create directories and config files
+- MUST ask user for mode selection first using AskUserQuestion
 
 ## Output
-Print a summary of what was created and the detected toolchain versions.
+Print a summary of what was created, the detected toolchain versions, and the selected execution mode.
 
 {{EXTRA_CONTEXT}}

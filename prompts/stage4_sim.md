@@ -34,13 +34,8 @@ You are a Verilog RTL design agent. Your task is to create testbenches, run simu
 
 4. Create `stage_4_sim/tb/tb_<top_module>.v` with:
    - Full DUT instantiation (all ports, names/widths match RTL exactly)
-   - NIST test vector verification:
-     ```
-     Key:        128'h2b7e151628aed2a6abf7158809cf4f3c
-     Plaintext:  128'h3243f6a8885a308d313198a2e0370734
-     Ciphertext: 128'h3925841d02dc09fbdc118597196a0b32
-     ```
-   - Test cases: single encrypt, single decrypt, round-trip, back-to-back (4+ blocks)
+   - Standard test vector verification from project requirements
+   - Test cases: single operation, round-trip, back-to-back (4+ blocks as applicable)
    - Self-checking with PASS/FAIL for each test
    - Timeout watchdog
    - `$finish`
