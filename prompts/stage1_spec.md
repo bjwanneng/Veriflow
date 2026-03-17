@@ -16,11 +16,11 @@ Incorporate naming best practices from the coding style guidelines and apply the
 {{CODING_STYLE}}
 
 ## Base Mandatory Constraints
-- Reset: async active-low (rst_n)
+- Reset: **per project config** — read `.veriflow/project_config.json` `coding_style.reset_type` and `coding_style.reset_signal` to determine reset polarity and signal name. Default: async active-low (`rst_n`)
 - Naming: snake_case for modules/signals, UPPER_CASE for parameters
 - Port style: ANSI
 - Combinational: `always @*` with blocking `=`
-- Sequential: `always @(posedge clk or negedge rst_n)` with non-blocking `<=`
+- Sequential: use `always @(posedge clk or negedge rst_n)` for async reset, or `always @(posedge clk)` for sync reset — match the project config `coding_style.reset_type`
 - Verilog-2005 only, no SystemVerilog
 
 ## Tasks
@@ -234,6 +234,14 @@ Create WaveDrom format interface timing diagram file (.json or .wavedrom) in `st
 - Must include `data_flow_sequences` describing data flow
 - Must include `fsm_spec` (if has FSM) with explicit state enumeration and transition conditions
 - Must include `internal_signals` to pre-define internal key registers and wire names to prevent spelling or connection errors
+- **architecture_summary must be detailed**: include module partitioning overview, interface descriptions, and interconnection explanation
+- **Reset style must match project config**: Read `.veriflow/project_config.json` `coding_style.reset_type` and `coding_style.reset_signal`. Use the configured values in `clock_domains[].reset_port`, `clock_domains[].reset_type`, and port definitions. The JSON template above uses `rst_n`/`async_active_low` as examples — adapt to match your project config.
+
+### 5. Generate Documentation (Optional but Recommended)
+
+Create architecture documentation in `stage_1_spec/docs/`:
+- Timing diagram in WaveDrom format (.json or .wavedrom)
+- Architecture block diagram or markdown documentation
 
 ### 5. Parameterized Mode User Confirmation Points (Parameterized Mode Only)
 
@@ -253,5 +261,18 @@ If execution_mode == "parameterized", use AskUserQuestion to confirm before gene
 
 ## Output
 Print a summary: module count, pipeline depth, estimated resource usage, and whether user approvals were obtained (if in parameterized mode).
+
+### After Validation: Confirm to Proceed
+
+After running `validate` and validation passes, read and check the project config:
+
+1. Read `.veriflow/project_config.json` and check the value of `confirm_after_validate`
+2. If `confirm_after_validate` is true (or the field doesn't exist):
+   - Print a summary of what was accomplished in this stage to the user
+   - Use AskUserQuestion tool to ask for confirmation before proceeding to `complete`
+   - Question: "Stage 1 validation passed! Do you want to proceed to mark this stage complete?"
+   - Options: ["Proceed to complete this stage", "Wait, I want to review the outputs first"]
+3. If `confirm_after_validate` is false:
+   - Automatically proceed to `complete` without asking for user confirmation
 
 {{EXTRA_CONTEXT}}

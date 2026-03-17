@@ -27,6 +27,7 @@ You are a Verilog RTL design agent. Your task is to generate all RTL modules AND
 - No forward references — declare before use
 - Lookup tables MUST be fully expanded (no `// ...` truncation)
 - Crypto modules: add byte order comment (e.g., `// Byte mapping: s[0]=[127:120], s[15]=[7:0]`)
+- **Reset style**: Read `.veriflow/project_config.json` `coding_style.reset_type` and `coding_style.reset_signal`. Use the configured reset type (sync/async, active-high/low). Examples below use `rst_n` (async active-low) as default — adapt to match your project config.
 
 ## Tasks
 
@@ -320,23 +321,51 @@ endmodule
 `resetall
 ```
 
-### 4. Compile All RTL Files
+### 4. Compile All RTL Files (Lint Step 1)
 
-After generating all files, compile together:
+After generating all files, compile together (first lint step):
 
 ```bash
-# Add path on Windows
+# Add EDA tools to PATH (adjust for your platform)
 export PATH="/c/oss-cad-suite/bin:/c/oss-cad-suite/lib:$PATH"
-iverilog -g2005 -Wall -o /dev/null stage_3_codegen/rtl/*.v
+mkdir -p stage_3_codegen/reports
+iverilog -g2005 -Wall -o /dev/null stage_3_codegen/rtl/*.v > stage_3_codegen/reports/lint_step1.log 2>&1
+# NOTE: On Windows, use NUL instead of /dev/null, or redirect output to a temp file.
+# If `tee` is unavailable, use file redirection: > file.log 2>&1
 ```
 
-### 5. Compile Automatic Testbench
+### 5. Compile Automatic Testbench (Lint Step 2)
+
+Second lint step - compile with testbenches:
 
 ```bash
-iverilog -g2005 -Wall -o /dev/null stage_3_codegen/rtl/*.v stage_3_codegen/tb_autogen/*.v
+iverilog -g2005 -Wall -o /dev/null stage_3_codegen/rtl/*.v stage_3_codegen/tb_autogen/*.v > stage_3_codegen/reports/lint_step2.log 2>&1
+# NOTE: On Windows, use NUL instead of /dev/null, or redirect output to a temp file.
 ```
 
-### 6. Error Fixing
+### 6. Generate Lint Report
+
+Save lint results to `stage_3_codegen/reports/lint_report.json`:
+```json
+{
+  "lint_step1_passed": true,
+  "lint_step2_passed": true,
+  "warnings": [],
+  "errors": []
+}
+```
+
+### 7. Testbench Requirements
+
+Each testbench in `tb_autogen/` must include:
+- **Adequate debug prints**: At least 3 `$display` or `$monitor` statements for debugging
+- **Status prints**: Clear [PASS]/[FAIL] messages for each test
+- **Clock generation**: `always` block with clock toggling
+- **Reset sequence**: Full reset initialization
+- **Watchdog timer**: Prevent simulation hang
+- **$finish**: Proper simulation termination
+
+### 8. Error Fixing
 
 If compilation fails, read error messages, fix issues, then recompile. Repeat until 0 errors.
 
@@ -353,10 +382,14 @@ stage_3_codegen/
 │   ├── module1.v
 │   ├── module2.v
 │   └── design_top.v
-└── tb_autogen/
-    ├── tb_module1.v
-    ├── tb_module2.v
-    └── tb_design_top.v
+├── tb_autogen/
+│   ├── tb_module1.v
+│   ├── tb_module2.v
+│   └── tb_design_top.v
+└── reports/
+    ├── lint_step1.log
+    ├── lint_step2.log
+    └── lint_report.json
 ```
 
 ## Constraints
@@ -368,5 +401,18 @@ stage_3_codegen/
 
 ## Output
 Print: list of generated files (RTL and testbench), compilation results (PASS/FAIL), any warnings.
+
+### After Validation: Confirm to Proceed
+
+After running `validate` and validation passes, read and check the project config:
+
+1. Read `.veriflow/project_config.json` and check the value of `confirm_after_validate`
+2. If `confirm_after_validate` is true (or the field doesn't exist):
+   - Print a summary of what was accomplished in this stage to the user
+   - Use AskUserQuestion tool to ask for confirmation before proceeding to `complete`
+   - Question: "Stage 3 validation passed! Do you want to proceed to mark this stage complete?"
+   - Options: ["Proceed to complete this stage", "Wait, I want to review the outputs first"]
+3. If `confirm_after_validate` is false:
+   - Automatically proceed to `complete` without asking for user confirmation
 
 {{EXTRA_CONTEXT}}

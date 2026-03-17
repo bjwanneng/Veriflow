@@ -4,11 +4,11 @@ description: Industrial-grade Verilog design pipeline with script-controlled orc
 license: MIT
 metadata:
   author: VeriFlow Team
-  version: "8.0.0"
+  version: "8.1.0"
   category: hardware-design
 ---
 
-# VeriFlow-Agent 8.0 — Gate-Controlled Pipeline
+# VeriFlow-Agent 8.1 — Gate-Controlled Pipeline
 
 Architecture: **Script as gatekeeper, LLM as executor.**
 - `veriflow_ctl.py` enforces stage ordering, prerequisites, and validation gates
@@ -31,9 +31,13 @@ Architecture: **Script as gatekeeper, LLM as executor.**
 
 **You MUST follow this exact loop. Do NOT deviate.**
 
-The controller script path is:
+The controller script path is relative to this skill's directory:
 ```
-CTL="C:\Users\wanneng.zhang\.claude\skills\verilog-flow-skill\veriflow_ctl.py"
+CTL="<SKILL_DIR>/veriflow_ctl.py"
+```
+Where `<SKILL_DIR>` is the directory containing this SKILL.md file. Resolve it to an absolute path before use. For example, if this skill is installed at `~/.claude/skills/verilog-flow-skill/`, then:
+```bash
+CTL="$HOME/.claude/skills/verilog-flow-skill/veriflow_ctl.py"
 ```
 
 ### Loop: repeat until all stages complete
@@ -64,7 +68,7 @@ python "$CTL" complete -d "PROJECT_DIR" STAGE_NUMBER
 - If `REFUSED` → validation failed internally. Fix errors and retry.
 
 **Step 5 — (If needed) Ask user before proceeding to next stage**
-For stages 1-5, use AskUserQuestion to confirm with the user before moving to the next stage. Show them a brief summary of what was accomplished.
+Check `.veriflow/project_config.json` `confirm_after_validate`. If true (or field missing), use AskUserQuestion to confirm with the user before moving to the next stage. Show them a brief summary of what was accomplished.
 
 ### Rollback (when stuck)
 If a stage repeatedly fails and the root cause is in an earlier stage:
@@ -85,4 +89,9 @@ python "$CTL" status -d "PROJECT_DIR"
 3. **Fix errors in-place** — if validation fails, fix the files and re-validate; do not move on
 4. **One stage at a time** — the controller enforces sequential execution
 5. **requirement.md** — the project directory must contain a `requirement.md` file describing the design
-6. **Windows PATH** — for iverilog/yosys, add to PATH: `export PATH="/c/oss-cad-suite/bin:/c/oss-cad-suite/lib:$PATH"`
+6. **EDA toolchain PATH** — the controller auto-detects tool paths across platforms. If tools are not found, add them manually:
+   - Windows: `export PATH="/c/oss-cad-suite/bin:/c/oss-cad-suite/lib:$PATH"`
+   - macOS: `export PATH="/opt/homebrew/bin:$PATH"`
+   - Linux: `export PATH="/opt/oss-cad-suite/bin:$PATH"`
+7. **Cross-platform shell commands** — avoid `| tee`, `| head`, `timeout` (not available on all platforms). Use file redirection (`> file.log 2>&1`) instead. Testbench watchdog timers handle simulation timeouts.
+8. **Coding style from project config** — always read `.veriflow/project_config.json` `coding_style` for reset type/signal, naming conventions, etc. Do not hardcode `rst_n` or assume async active-low reset.

@@ -1,0 +1,203 @@
+# VeriFlow-Agent v8.1
+
+Industrial-grade Verilog RTL design pipeline — **Script as gatekeeper, LLM as executor.**
+
+Cross-platform: Linux / macOS / Windows (Git Bash, MSYS2, native CMD)
+
+## Architecture
+
+```
+Claude Code (LLM)          veriflow_ctl.py (Script)
+    |                            |
+    |  1. call next             |
+    | =========================>| Check prerequisites -> output prompt
+    |                            |
+    |  2. Execute stage tasks    |
+    |  (generate code/spec/TB..)|
+    |                            |
+    |  3. call validate          |
+    | =========================>| Deterministic checks -> PASS/FAIL
+    |                            |
+    |  4. call complete          |
+    | =========================>| Mark done only if validation passed
+    |                            |
+    |  Back to 1                 |
+```
+
+The LLM handles creative work (writing Verilog, designing architecture, debugging). The script handles hard pass/fail decisions. The LLM cannot skip stages or bypass validation.
+
+## 7-Stage Pipeline
+
+| Stage | Name | Key Output |
+|-------|------|------------|
+| 0 | Project Initialization | Directory structure, project_config.json |
+| 1 | Micro-Architecture Spec | `stage_1_spec/specs/*_spec.json` |
+| 2 | Virtual Timing Modeling | YAML scenarios, golden traces, Cocotb tests |
+| 3 | RTL Code Generation + Lint | `stage_3_codegen/rtl/*.v`, auto testbenches |
+| 4 | Simulation & Verification | Unit/integration tests, sim logs (all PASS) |
+| 5 | Synthesis Analysis | Yosys synthesis, synth_report.json |
+| 6 | Closing | `reports/final_report.md` |
+
+## What's New in v8.1
+
+### Cross-Platform Compatibility
+- Controller forces UTF-8 stdout/stderr on startup, fixing `UnicodeEncodeError` on Windows GBK terminals
+- Toolchain detection (`_get_toolchain_env`) auto-searches common install paths on Windows / macOS (Homebrew) / Linux
+- `iverilog` compile check uses `tempfile` instead of platform-specific `/dev/null` vs `NUL`
+- `requirement.md` reading supports encoding auto-detection (utf-8 -> utf-8-sig -> gbk -> gb2312 -> latin-1)
+- All prompt templates use file redirection (`> file.log 2>&1`) instead of `tee`/`head`/`timeout`
+
+### Configurable Coding Style
+- Reset signal type and name are read from `project_config.json` `coding_style` field, no longer hardcoded to `rst_n`
+- Supports 4 reset styles: `async_active_low`, `async_active_high`, `sync_active_low`, `sync_active_high`
+- `build_prompt()` automatically injects `coding_style` config into the `{{CODING_STYLE}}` placeholder
+- All prompt templates (stage1~stage4) include instructions to read reset config from project config
+
+### Enhanced Validation
+- Stage 3: testbench reset signal check supports multiple reset names (`rst`, `rst_n`, `reset`)
+- Stage 4: simulation log verification now checks for positive completion indicators (`ALL TESTS PASSED`, `PASSED`, etc.)
+- `glob()` results wrapped with `list()`, fixing `TypeError` on Python 3.12+
+
+### Safe Output
+- All emoji characters in summary generators replaced with ASCII equivalents ([DONE], [OK], [WARN])
+
+## Getting Started
+
+### Prerequisites
+
+- Claude Code CLI installed
+- Python 3.10+
+- iverilog + yosys (recommended: [oss-cad-suite](https://github.com/YosysHQ/oss-cad-suite-build))
+
+### Toolchain Search Paths
+
+The controller automatically searches these paths:
+
+| Platform | Search Paths |
+|----------|-------------|
+| Windows | `C:/oss-cad-suite/bin`, `C:/oss-cad-suite/lib` |
+| macOS | `/opt/homebrew/bin`, `/usr/local/bin` |
+| Linux | `/opt/oss-cad-suite/bin`, `/usr/bin` |
+| Universal | `~/oss-cad-suite/bin`, `~/oss-cad-suite/lib` |
+
+If tools are not in the above paths, add them manually:
+```bash
+# Windows (Git Bash / MSYS2)
+export PATH="/c/oss-cad-suite/bin:/c/oss-cad-suite/lib:$PATH"
+# macOS
+export PATH="/opt/homebrew/bin:$PATH"
+# Linux
+export PATH="/opt/oss-cad-suite/bin:$PATH"
+```
+
+### As a Claude Code Skill (Recommended)
+
+1. Place this directory at `~/.claude/skills/verilog-flow-skill/`
+2. Create a `requirement.md` in your project directory describing the design
+3. Mention Verilog/RTL design in Claude Code — the skill triggers automatically
+4. Claude Code follows the loop protocol in SKILL.md to execute the full pipeline
+
+### Manual Usage with veriflow_ctl.py
+
+```bash
+CTL="~/.claude/skills/verilog-flow-skill/veriflow_ctl.py"
+
+# Check progress
+python "$CTL" status -d ./my_project
+
+# Get the next stage's task prompt
+python "$CTL" next -d ./my_project
+
+# Validate stage output
+python "$CTL" validate -d ./my_project 3
+
+# Mark stage complete (refused if validation fails)
+python "$CTL" complete -d ./my_project 3
+
+# Rollback to a previous stage
+python "$CTL" rollback -d ./my_project 1
+
+# View stage details
+python "$CTL" info -d ./my_project 3
+```
+
+## Coding Style Configuration
+
+During Stage 0 initialization, a `coding_style` field is written to `.veriflow/project_config.json`:
+
+```json
+{
+  "coding_style": {
+    "reset_type": "sync_active_high",
+    "reset_signal": "rst",
+    "clock_edge": "posedge",
+    "naming": "snake_case",
+    "port_style": "ANSI",
+    "indent": 4
+  }
+}
+```
+
+Supported `reset_type` values:
+- `async_active_low` — Async active-low (`rst_n`), default
+- `async_active_high` — Async active-high (`rst`)
+- `sync_active_low` — Sync active-low (`rst_n`)
+- `sync_active_high` — Sync active-high (`rst`)
+
+All subsequent stages (spec generation, RTL coding, testbenches, validation) read the reset style from this config, ensuring consistency across the entire pipeline.
+
+## Directory Structure
+
+```
+verilog-flow-skill/
+├── SKILL.md                          # Claude Code skill entry point
+├── README.md                         # Chinese documentation
+├── README_EN.md                      # English documentation
+├── veriflow_ctl.py                   # Gate controller v8.1 (cross-platform)
+├── prompts/                          # Task prompts for each stage
+│   ├── stage0_init.md
+│   ├── stage1_spec.md
+│   ├── stage2_timing.md
+│   ├── stage3_codegen.md
+│   ├── stage4_sim.md
+│   ├── stage5_synth.md
+│   └── stage6_close.md
+└── verilog_flow/
+    ├── common/
+    │   ├── kpi.py                    # KPI tracking (Pass@1, timing convergence)
+    │   └── experience_db.py          # Experience DB (failure case recording & retrieval)
+    ├── defaults/
+    │   ├── coding_style/             # generic / xilinx / intel coding standards
+    │   └── templates/                # Reusable Verilog templates
+    └── stage1/schemas/
+        └── arch_spec_v2.json         # Architecture spec JSON Schema
+```
+
+## Project Directory Structure (Generated at Runtime)
+
+```
+your-project/
+├── requirement.md                    # Design requirements (user-provided)
+├── .veriflow/
+│   ├── project_config.json           # Project config (includes coding_style)
+│   └── stage_completed/              # Stage completion markers (gate control)
+├── stage_1_spec/specs/               # JSON architecture spec
+├── stage_2_timing/
+│   ├── scenarios/                    # YAML timing scenarios
+│   ├── golden_traces/                # Expected value traces
+│   └── cocotb/                       # Cocotb test files
+├── stage_3_codegen/
+│   ├── rtl/                          # Generated .v files
+│   ├── tb_autogen/                   # Auto-generated testbenches
+│   └── reports/                      # Lint reports
+├── stage_4_sim/
+│   ├── tb/                           # Unit/integration testbenches
+│   ├── sim_output/                   # Simulation logs
+│   └── coverage/                     # VCD waveform files
+├── stage_5_synth/                    # Synthesis scripts, netlist, reports
+└── reports/                          # Final report + stage summaries
+```
+
+## License
+
+MIT

@@ -24,7 +24,8 @@ Create YAML timing scenarios in `stage_2_timing/scenarios/`. Create at least the
 - `random_stall.yaml` — (Boundary condition) Backpressure from downstream random ready deassertion
 - `input_bubble.yaml` — (Boundary condition) Upstream intermittent data with valid toggling
 
-Each YAML file follows this structure, with critical path estimation at the header:
+Each YAML file follows this structure, with critical path estimation at the header.
+**IMPORTANT**: Read `.veriflow/project_config.json` `coding_style.reset_signal` and `coding_style.reset_type` to determine the correct reset signal name and polarity. The examples below use `rst_n` (async active-low) as default — adapt to match your project config (e.g., use `rst` with active-high polarity if configured).
 ```yaml
 scenario: <name>
 description: <what_this_tests>
@@ -67,7 +68,8 @@ Generate Cocotb Python test files in `stage_2_timing/cocotb/` directory:
 
 #### 4.1 Generate Unit Tests for Each Module
 
-For each module in spec JSON, create `test_<module_name>.py`:
+For each module in spec JSON, create `test_<module_name>.py`.
+**IMPORTANT**: Use the reset signal name from project config (`coding_style.reset_signal`). Examples below use `rst_n` — adapt accordingly.
 
 ```python
 import cocotb
@@ -225,5 +227,18 @@ Create WaveDrom format timing diagram HTML or JSON files in `stage_2_timing/wave
 
 ## Output
 Print: number of scenarios created, golden traces generated, Cocotb test files created, and test vectors included.
+
+### After Validation: Confirm to Proceed
+
+After running `validate` and validation passes, read and check the project config:
+
+1. Read `.veriflow/project_config.json` and check the value of `confirm_after_validate`
+2. If `confirm_after_validate` is true (or the field doesn't exist):
+   - Print a summary of what was accomplished in this stage to the user
+   - Use AskUserQuestion tool to ask for confirmation before proceeding to `complete`
+   - Question: "Stage 2 validation passed! Do you want to proceed to mark this stage complete?"
+   - Options: ["Proceed to complete this stage", "Wait, I want to review the outputs first"]
+3. If `confirm_after_validate` is false:
+   - Automatically proceed to `complete` without asking for user confirmation
 
 {{EXTRA_CONTEXT}}
