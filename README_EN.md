@@ -1,4 +1,4 @@
-# VeriFlow-Agent v8.1
+# VeriFlow-Agent v8.2
 
 Industrial-grade Verilog RTL design pipeline — **Script as gatekeeper, LLM as executor.**
 
@@ -31,12 +31,47 @@ The LLM handles creative work (writing Verilog, designing architecture, debuggin
 | Stage | Name | Key Output |
 |-------|------|------------|
 | 0 | Project Initialization | Directory structure, project_config.json |
-| 1 | Micro-Architecture Spec | `stage_1_spec/specs/*_spec.json` |
-| 2 | Virtual Timing Modeling | YAML scenarios, golden traces, Cocotb tests |
+| 1 | Micro-Architecture Spec | `*_spec.json`, `structured_requirements.json` |
+| 2 | Virtual Timing Modeling | YAML scenarios, golden traces, Cocotb tests, `requirements_coverage_matrix.json` |
 | 3 | RTL Code Generation + Lint | `stage_3_codegen/rtl/*.v`, auto testbenches |
-| 4 | Simulation & Verification | Unit/integration tests, sim logs (all PASS) |
+| 4 | Simulation & Verification | Unit/integration tests, sim logs, `requirements_coverage_report.json` |
 | 5 | Synthesis Analysis | Yosys synthesis, synth_report.json |
 | 6 | Closing | `reports/final_report.md` |
+
+## What's New in v8.2
+
+### Requirements-Driven Verification — Traceability + Coverage Matrix
+
+Before v8.2, `requirement.md` was only read in Stage 0/1 and then lost. Cocotb tests were generic (data_range, protocol_corner_cases) without extracting specific functional points, performance metrics, or interface constraints from requirements. v8.2 establishes full traceability from requirements to verification.
+
+**Stage 1: Requirements Structuring**
+- New Task 0 (before architecture analysis): parse requirement.md → `structured_requirements.json`
+- Clarity check: evaluates completeness across functional/performance/interface/constraints; asks user to revise if vague
+- Each requirement has `req_id` (REQ-{FUNC|PERF|IF|CONS}-NNN), `category`, `testable`, `acceptance_criteria`
+- Validator checks: valid JSON, non-empty requirements, at least 1 functional, testable requirements have acceptance_criteria
+
+**Stage 2: Requirements Coverage Matrix**
+- requirement.md injected into Stage 2 prompt via `{{REQUIREMENT}}` placeholder
+- New Section 3.5: generates `requirements_coverage_matrix.json`, mapping each testable requirement to cocotb tests, coverpoints, YAML scenarios
+- CoverageCollector adds requirement-derived coverpoints (functional→operation coverage, performance→metric coverage, interface→protocol coverage)
+- test_integration.py updates matrix status after test execution
+- Validator checks: non-empty matrix, each entry has cocotb_tests, coverage_pct > 0
+
+**Stage 4: Requirements Coverage Report**
+- New Part E Step 16: generates `requirements_coverage_report.json`
+- Summarizes verification status (verified/failed/not_run) per requirement, with per-category coverage stats
+- Validator checks: requirements_coverage_pct > 0
+
+**Data Flow**:
+```
+requirement.md
+    ↓ (Stage 1)
+structured_requirements.json    ←── Requirements structuring
+    ↓ (Stage 2)
+requirements_coverage_matrix.json  ←── Requirements → test mapping
+    ↓ (Stage 4)
+requirements_coverage_report.json  ←── Verification results summary
+```
 
 ## What's New in v8.1
 
@@ -153,7 +188,7 @@ verilog-flow-skill/
 ├── SKILL.md                          # Claude Code skill entry point
 ├── README.md                         # Chinese documentation
 ├── README_EN.md                      # English documentation
-├── veriflow_ctl.py                   # Gate controller v8.1 (cross-platform)
+├── veriflow_ctl.py                   # Gate controller v8.2 (cross-platform)
 ├── prompts/                          # Task prompts for each stage
 │   ├── stage0_init.md
 │   ├── stage1_spec.md
@@ -181,11 +216,11 @@ your-project/
 ├── .veriflow/
 │   ├── project_config.json           # Project config (includes coding_style)
 │   └── stage_completed/              # Stage completion markers (gate control)
-├── stage_1_spec/specs/               # JSON architecture spec
+├── stage_1_spec/specs/               # JSON architecture spec + structured_requirements.json
 ├── stage_2_timing/
 │   ├── scenarios/                    # YAML timing scenarios
 │   ├── golden_traces/                # Expected value traces
-│   └── cocotb/                       # Cocotb test files
+│   └── cocotb/                       # Cocotb test files + requirements_coverage_matrix.json
 ├── stage_3_codegen/
 │   ├── rtl/                          # Generated .v files
 │   ├── tb_autogen/                   # Auto-generated testbenches
@@ -193,7 +228,9 @@ your-project/
 ├── stage_4_sim/
 │   ├── tb/                           # Unit/integration testbenches
 │   ├── sim_output/                   # Simulation logs
-│   └── coverage/                     # VCD waveform files
+│   ├── cocotb_regression/            # Cocotb regression tests
+│   ├── coverage/                     # VCD waveform files
+│   └── requirements_coverage_report.json  # Requirements coverage report
 ├── stage_5_synth/                    # Synthesis scripts, netlist, reports
 └── reports/                          # Final report + stage summaries
 ```
