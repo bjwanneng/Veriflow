@@ -88,6 +88,18 @@
             "$ref": "#/definitions/port"
           }
         },
+        "timing_contracts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/timing_contract"
+          }
+        },
+        "cycle_behavior_tables": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/cycle_behavior_table"
+          }
+        },
         "estimated_complexity": {
           "type": "string",
           "enum": ["low", "medium", "high"]
@@ -207,6 +219,88 @@
         },
         "description": {
           "type": "string"
+        }
+      }
+    },
+    "timing_contract": {
+      "type": "object",
+      "required": ["contract_name", "protocol_type", "latency_cycles", "input_signals", "output_signals"],
+      "properties": {
+        "contract_name": {
+          "type": "string",
+          "description": "Descriptive name for this timing contract"
+        },
+        "protocol_type": {
+          "type": "string",
+          "enum": ["valid_ready_backpressure", "valid_only", "req_ack"],
+          "description": "Handshake protocol type"
+        },
+        "latency_cycles": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of clock cycles from input valid to output valid"
+        },
+        "input_signals": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of input signal names involved in this contract"
+        },
+        "output_signals": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of output signal names involved in this contract"
+        },
+        "pipeline_register_boundaries": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Names of pipeline stage registers"
+        },
+        "backpressure_signal": {
+          "type": "string",
+          "description": "Signal name for backpressure (required for valid_ready_backpressure)"
+        },
+        "stall_behavior": {
+          "type": "string",
+          "description": "Description of what happens when pipeline is stalled"
+        },
+        "flush_behavior": {
+          "type": "string",
+          "description": "Description of what happens on flush"
+        }
+      }
+    },
+    "cycle_behavior_table": {
+      "type": "object",
+      "required": ["scenario_name", "description", "cycles"],
+      "properties": {
+        "scenario_name": {
+          "type": "string",
+          "description": "Name of the timing scenario"
+        },
+        "description": {
+          "type": "string",
+          "description": "What this scenario tests"
+        },
+        "cycles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["cycle", "signals"],
+            "properties": {
+              "cycle": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "signals": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "note": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "Per-cycle expected signal values"
         }
       }
     }

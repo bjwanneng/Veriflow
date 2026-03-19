@@ -727,6 +727,38 @@ def _validate_stage1(project_dir: Path) -> Tuple[bool, List[str]]:
                 errors.append(f"{spec_file.name}: Module '{mod.get('name', '?')}' missing 'ports'")
             if "description" not in mod or len(mod.get("description", "").strip()) < 10:
                 errors.append(f"{spec_file.name}: Module '{mod.get('name', '?')}' missing detailed description")
+
+            # ── Timing contract checks ──
+            has_pipeline = "pipeline_stages_detail" in mod and len(mod.get("pipeline_stages_detail", [])) > 0
+            has_handshake = any(
+                p.get("protocol") in ("handshake", "valid-ready", "valid_ready")
+                or "valid" in p.get("name", "").lower()
+                for p in mod.get("ports", [])
+            )
+            has_fsm = "fsm_spec" in mod and mod.get("fsm_spec")
+
+            if has_pipeline or has_handshake:
+                timing_contracts = mod.get("timing_contracts", [])
+                if not timing_contracts:
+                    errors.append(f"{spec_file.name}: Module '{mod.get('name', '?')}' has pipeline/handshake but missing timing_contracts")
+                else:
+                    for tc in timing_contracts:
+                        if tc.get("protocol_type") == "valid_ready_backpressure":
+                            if not tc.get("backpressure_signal"):
+                                errors.append(f"{spec_file.name}: Module '{mod.get('name', '?')}' timing_contract '{tc.get('contract_name', '?')}' missing backpressure_signal")
+                            if not tc.get("stall_behavior"):
+                                errors.append(f"{spec_file.name}: Module '{mod.get('name', '?')}' timing_contract '{tc.get('contract_name', '?')}' missing stall_behavior")
+                        # Cross-check latency vs pipeline depth
+                        if has_pipeline:
+                            pipeline_depth = len(mod.get("pipeline_stages_detail", []))
+                            contract_latency = tc.get("latency_cycles", -1)
+                            if contract_latency >= 0 and pipeline_depth > 0 and contract_latency != pipeline_depth:
+                                errors.append(f"{spec_file.name}: Module '{mod.get('name', '?')}' latency_cycles ({contract_latency}) != pipeline_stages_detail count ({pipeline_depth})")
+
+            if has_pipeline or has_fsm:
+                cbt = mod.get("cycle_behavior_tables", [])
+                if not cbt:
+                    errors.append(f"{spec_file.name}: Module '{mod.get('name', '?')}' has pipeline/FSM but missing cycle_behavior_tables")
     # 检查是否有文档
     doc_files = list(docs_dir.glob("*.md")) + list(docs_dir.glob("*.wavedrom")) + list(docs_dir.glob("*.json"))
     if not doc_files and docs_dir.exists():
@@ -743,6 +775,51 @@ def _validate_stage2(project_dir: Path) -> Tuple[bool, List[str]]:
     scenarios = list(timing_dir.rglob("*.yaml")) + list(timing_dir.rglob("*.yml"))
     if not scenarios:
         errors.append("No YAML timing scenarios found in stage_2_timing/")
+
+    # Check golden traces
+    golden_dir = timing_dir / "golden_traces"
+    if golden_dir.exists():
+        traces = list(golden_dir.glob("*.json"))
+        if not traces:
+            errors.append("No golden trace JSON files found in stage_2_timing/golden_traces/")
+    else:
+        errors.append("Missing stage_2_timing/golden_traces/ directory")
+
+    # Check cocotb files
+    cocotb_dir = timing_dir / "cocotb"
+    if cocotb_dir.exists():
+        py_files = list(cocotb_dir.glob("*.py"))
+        if not py_files:
+            errors.append("No Python test files found in stage_2_timing/cocotb/")
+        else:
+            # Check for GoldenModel class with tick() and reset()
+            has_golden_model = False
+            has_timing_checker = False
+            for py_file in py_files:
+                try:
+                    content = py_file.read_text(encoding="utf-8", errors="replace")
+                    if "class GoldenModel" in content:
+                        has_golden_model = True
+                        if "def tick(" not in content:
+                            errors.append(f"{py_file.name}: GoldenModel missing tick() method")
+                        if "def reset(" not in content:
+                            errors.append(f"{py_file.name}: GoldenModel missing reset() method")
+                    if "TimingChecker" in content or "timing_checker" in content or "cycle_check" in content.lower():
+                        has_timing_checker = True
+                    # Syntax check
+                    try:
+                        compile(content, str(py_file), "exec")
+                    except SyntaxError as e:
+                        errors.append(f"{py_file.name}: Python syntax error — {e}")
+                except Exception:
+                    pass
+            if not has_golden_model:
+                errors.append("No GoldenModel class found in stage_2_timing/cocotb/ Python files")
+            if not has_timing_checker:
+                errors.append("No TimingChecker (or equivalent cycle-by-cycle comparison) found in stage_2_timing/cocotb/")
+    else:
+        errors.append("Missing stage_2_timing/cocotb/ directory")
+
     return len(errors) == 0, errors
 
 
@@ -824,6 +901,16 @@ def _validate_stage3(project_dir: Path) -> Tuple[bool, List[str]]:
             # Check for any recognized reset signal
             if not any(rn in content for rn in reset_names) and "reset" not in content.lower():
                 errors.append(f"{tb_file.name}: No reset sequence found (expected '{reset_signal}' or similar)")
+
+    # ── Timing annotation checks on RTL files ──
+    for vf in rtl_files:
+        content = vf.read_text(encoding="utf-8", errors="replace")
+        if "TIMING CONTRACT" not in content:
+            errors.append(f"{vf.name}: Missing TIMING CONTRACT comment block")
+        if "TIMING SELF-CHECK" not in content:
+            errors.append(f"{vf.name}: Missing TIMING SELF-CHECK comment block")
+        if not re.search(r'//\s*Cycle\s+\d+', content):
+            errors.append(f"{vf.name}: Missing per-cycle annotations (expected '// Cycle N:' comments)")
 
     return len(errors) == 0, errors
 
@@ -925,6 +1012,35 @@ def _validate_stage4(project_dir: Path) -> Tuple[bool, List[str]]:
             coverage_found = True
     if not coverage_found:
         errors.append("No coverage data found (.vcd, .dat, .saif) - coverage analysis missing")
+
+    # ── Timing-specific test checks ──
+    has_latency_test = False
+    has_backpressure_test = False
+    if sim_output_dir.exists():
+        for log_file in sim_output_dir.glob("*.log"):
+            try:
+                content = log_file.read_text(encoding="utf-8", errors="ignore").lower()
+                if "latency" in content:
+                    has_latency_test = True
+                if "backpressure" in content or "stress" in content or "back_pressure" in content:
+                    has_backpressure_test = True
+            except Exception:
+                pass
+    # Also check testbench source files for timing tests
+    if tb_dir.exists():
+        for tb_file in tb_dir.rglob("*.v"):
+            try:
+                content = tb_file.read_text(encoding="utf-8", errors="replace").lower()
+                if "latency" in content:
+                    has_latency_test = True
+                if "backpressure" in content or "stress" in content or "back_pressure" in content:
+                    has_backpressure_test = True
+            except Exception:
+                pass
+    if not has_latency_test:
+        errors.append("No latency detection test found in simulation logs or testbenches")
+    if not has_backpressure_test:
+        errors.append("No backpressure/stress test found in simulation logs or testbenches")
 
     return len(errors) == 0, errors
 

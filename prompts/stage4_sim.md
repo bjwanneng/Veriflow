@@ -69,6 +69,72 @@ You are a Verilog RTL design agent. Your task is to create testbenches, run simu
 
 7. If any test FAILS, analyze the output, fix the RTL or testbench, and re-run until all PASS.
 
+### Part C: Timing-Specific Verification
+
+8. Create timing-specific tests in `stage_4_sim/tb/` alongside the integration testbench:
+
+#### 8.1 Off-by-One Latency Detection Test
+Create a test that sends a single-cycle pulse on `i_valid` and precisely counts the number of clock cycles until `o_valid` is asserted. Compare against the `EXPECTED_LATENCY` from the spec's `timing_contracts.latency_cycles`.
+
+```verilog
+// Latency detection test pattern:
+// 1. After reset, drive i_valid=1 for exactly 1 cycle with known data
+// 2. Count cycles until o_valid==1
+// 3. Compare measured_latency vs EXPECTED_LATENCY
+// 4. FAIL if off by even 1 cycle
+task test_latency_detection;
+    integer cycle_count;
+    begin
+        $display("[TEST] Latency Detection");
+        @(posedge clk);
+        i_valid = 1;
+        i_data = 32'hDEADBEEF;
+        @(posedge clk);
+        i_valid = 0;
+        cycle_count = 0;
+        while (o_valid !== 1 && cycle_count < 100) begin
+            @(posedge clk);
+            cycle_count = cycle_count + 1;
+        end
+        if (cycle_count !== EXPECTED_LATENCY) begin
+            $display("[FAIL] Latency mismatch: expected %0d cycles, measured %0d", EXPECTED_LATENCY, cycle_count);
+            $finish;
+        end
+        $display("[PASS] Latency = %0d cycles (matches spec)", cycle_count);
+    end
+endtask
+```
+
+#### 8.2 Backpressure Stress Test
+If the design has a ready/backpressure signal, create a test that:
+- Continuously drives valid data at the input
+- Randomly deasserts `o_ready` (or asserts backpressure) using a PRBS or LFSR pattern
+- After all data is sent, verifies that every input word appears at the output (no data loss)
+- Verifies data ordering is preserved
+
+```verilog
+// Backpressure stress test pattern:
+// 1. Send N data words continuously (i_valid=1 every cycle)
+// 2. Randomly toggle o_ready with ~50% probability each cycle
+// 3. Collect all outputs, verify count == N and data matches
+task test_backpressure_stress;
+    // ... implement with random ready toggling ...
+endtask
+```
+
+#### 8.3 Pipeline Bubble Test
+Test intermittent valid input (bubbles in the pipeline):
+- Drive `i_valid` with a pattern like 1,0,0,1,0,1,1,0 (gaps between valid data)
+- Verify that bubbles propagate correctly and do not corrupt adjacent data
+- Verify output data matches input data in order
+
+9. Compile and run timing-specific tests:
+   ```bash
+   export PATH="/c/oss-cad-suite/bin:/c/oss-cad-suite/lib:$PATH"
+   iverilog -g2005 -o stage_4_sim/sim_output/sim_timing.vvp stage_3_codegen/rtl/*.v stage_4_sim/tb/tb_timing_*.v
+   timeout 60 vvp stage_4_sim/sim_output/sim_timing.vvp > stage_4_sim/sim_output/timing_tests.log 2>&1
+   ```
+
 ## Constraints
 - ALL testbenches must have self-checking (PASS/FAIL) — no waveform-only tests
 - ALL testbenches must have $finish and timeout watchdog

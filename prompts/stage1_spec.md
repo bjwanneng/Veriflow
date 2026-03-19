@@ -156,6 +156,31 @@ Generate the complete architecture specification at `stage_1_spec/specs/<design_
           "description": "timing_description"
         }
       ],
+      "timing_contracts": [
+        {
+          "contract_name": "data_processing",
+          "protocol_type": "valid_ready_backpressure|valid_only|req_ack",
+          "latency_cycles": 3,
+          "input_signals": ["i_valid", "i_data"],
+          "output_signals": ["o_valid", "o_data"],
+          "pipeline_register_boundaries": ["stage0_reg", "stage1_reg", "stage2_reg"],
+          "backpressure_signal": "o_ready",
+          "stall_behavior": "All pipeline registers hold when o_ready==0",
+          "flush_behavior": "Valid bits cleared on flush"
+        }
+      ],
+      "cycle_behavior_tables": [
+        {
+          "scenario_name": "single_data_no_backpressure",
+          "description": "One data word through 3-stage pipeline, no stalls",
+          "cycles": [
+            {"cycle": 0, "signals": {"i_valid": 1, "i_data": "0xAA", "o_valid": 0}, "note": "Input captured into stage0_reg"},
+            {"cycle": 1, "signals": {"i_valid": 0, "o_valid": 0}, "note": "Data in stage1_reg"},
+            {"cycle": 2, "signals": {"o_valid": 0}, "note": "Data in stage2_reg"},
+            {"cycle": 3, "signals": {"o_valid": 1, "o_data": "0xAA"}, "note": "Output valid"}
+          ]
+        }
+      ],
       "pipeline_stages_detail": [
         {
           "stage_id": 0,
@@ -234,6 +259,9 @@ Create WaveDrom format interface timing diagram file (.json or .wavedrom) in `st
 - Must include `data_flow_sequences` describing data flow
 - Must include `fsm_spec` (if has FSM) with explicit state enumeration and transition conditions
 - Must include `internal_signals` to pre-define internal key registers and wire names to prevent spelling or connection errors
+- Modules with pipeline or handshake interfaces must include `timing_contracts` — each contract must specify `protocol_type`, `latency_cycles`, `input_signals`, `output_signals`; valid-ready protocols must also declare `backpressure_signal` and `stall_behavior`
+- Modules with pipeline or FSM must include `cycle_behavior_tables` with at least one scenario showing expected signal values per cycle
+- `timing_contracts[].latency_cycles` must equal the number of stages in `pipeline_stages_detail` for the same data path
 - **architecture_summary must be detailed**: include module partitioning overview, interface descriptions, and interconnection explanation
 - **Reset style must match project config**: Read `.veriflow/project_config.json` `coding_style.reset_type` and `coding_style.reset_signal`. Use the configured values in `clock_domains[].reset_port`, `clock_domains[].reset_type`, and port definitions. The JSON template above uses `rst_n`/`async_active_low` as examples — adapt to match your project config.
 

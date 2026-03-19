@@ -29,6 +29,55 @@ You are a Verilog RTL design agent. Your task is to generate all RTL modules AND
 - Crypto modules: add byte order comment (e.g., `// Byte mapping: s[0]=[127:120], s[15]=[7:0]`)
 - **Reset style**: Read `.veriflow/project_config.json` `coding_style.reset_type` and `coding_style.reset_signal`. Use the configured reset type (sync/async, active-high/low). Examples below use `rst_n` (async active-low) as default — adapt to match your project config.
 
+## Timing Contract Enforcement
+
+Before generating any RTL code, you MUST follow these timing-aware steps:
+
+### Step 1: Read Timing Contracts
+- Read `timing_contracts` and `cycle_behavior_tables` from the spec JSON
+- Identify the protocol type, latency, stall/flush behavior for each module
+
+### Step 2: Select Timing Pattern
+- Based on the module's protocol type, select the matching pattern from the timing patterns reference (loaded via coding style):
+  - `valid_ready_backpressure` → Pattern 2 (Multi-Stage Pipeline with Stall/Flush)
+  - `valid_only` → Pattern 1 (Valid-Ready Pipeline Stage) simplified
+  - FSM with registered outputs → Pattern 3 (FSM Registered Outputs)
+  - Protocol bridge → Pattern 4 (Handshake Bridge)
+- Avoid the anti-patterns listed in the timing patterns reference
+
+### Step 3: Add Timing Annotations
+Every RTL module with a timing contract MUST include a `TIMING CONTRACT` comment block at the top:
+```verilog
+// ──────────────────────────────────────────────
+// TIMING CONTRACT
+//   Protocol:       valid_ready_backpressure
+//   Latency:        3 cycles (input valid → output valid)
+//   Stall behavior: All pipeline regs hold when o_ready==0
+//   Flush behavior: Valid bits cleared on i_flush
+// ──────────────────────────────────────────────
+```
+
+Pipeline stages must have per-cycle comments:
+```verilog
+// Cycle 0: Input captured into stage0_reg
+// Cycle 1: stage0_reg → stage1_reg (computation A)
+// Cycle 2: stage1_reg → stage2_reg (computation B)
+// Cycle 3: stage2_reg → output (o_valid asserted)
+```
+
+### Step 4: Timing Self-Check (Critical)
+After generating the RTL, mentally trace through the `cycle_behavior_table` scenarios from the spec. For each scenario, walk through the code cycle-by-cycle and verify signal values match. Record the result in a `TIMING SELF-CHECK` comment block:
+```verilog
+// ──────────────────────────────────────────────
+// TIMING SELF-CHECK: single_data_no_backpressure
+//   Cycle 0: i_valid=1, i_data=0xAA → captured in stage0_reg ✓
+//   Cycle 1: stage0_reg→stage1_reg, o_valid=0 ✓
+//   Cycle 2: stage1_reg→stage2_reg, o_valid=0 ✓
+//   Cycle 3: stage2_reg→output, o_valid=1, o_data=0xAA ✓
+//   Result: PASS — latency matches spec (3 cycles)
+// ──────────────────────────────────────────────
+```
+
 ## Tasks
 
 ### 1. Read Specification JSON
