@@ -242,6 +242,26 @@ def _generate_stage1_details(project_dir: Path, project_config: Dict, files_list
     content += "   - Read and analyzed requirement.md\n"
     content += "   - Extracted design parameters and interfaces\n\n"
 
+    # Structured requirements summary
+    struct_req_file = project_dir / "stage_1_spec" / "specs" / "structured_requirements.json"
+    if struct_req_file.exists():
+        try:
+            req_data = json.loads(struct_req_file.read_text(encoding="utf-8"))
+            requirements = req_data.get("requirements", [])
+            total = len(requirements)
+            testable = sum(1 for r in requirements if r.get("testable"))
+            by_cat = {}
+            for r in requirements:
+                cat = r.get("category", "unknown")
+                by_cat[cat] = by_cat.get(cat, 0) + 1
+            content += "   **Structured Requirements**:\n"
+            content += f"   - Total requirements: {total}\n"
+            for cat, cnt in sorted(by_cat.items()):
+                content += f"   - {cat}: {cnt}\n"
+            content += f"   - Testable: {testable}\n\n"
+        except (json.JSONDecodeError, Exception):
+            pass
+
     content += "2. **Module partitioning**\n"
     spec_dir = project_dir / "stage_1_spec" / "specs"
     module_count = 0
@@ -313,8 +333,39 @@ def _generate_stage2_details(project_dir: Path, project_config: Dict, files_list
     content += "   - Integration tests with golden reference model\n"
     content += "   - Makefile for test execution\n"
 
+    # UVM-like verification library summary
+    has_bfm = any("vf_bfm" in f for f in files_list)
+    has_scoreboard = any("vf_scoreboard" in f or "scoreboard" in f.lower() for f in files_list)
+    has_coverage = any("vf_coverage" in f or "coverage" in f.lower() for f in files_list if f.endswith(".py"))
+    has_constrained = any("vf_test_factory" in f or "constrained" in f.lower() for f in files_list)
+    content += "\n4. **UVM-like Verification Library**\n"
+    if has_bfm:
+        content += "   - [OK] BFM (Driver/Monitor) infrastructure\n"
+    if has_scoreboard:
+        content += "   - [OK] Scoreboard with golden model comparison\n"
+    if has_coverage:
+        content += "   - [OK] Functional coverage collector\n"
+    if has_constrained:
+        content += "   - [OK] Constrained random stimulus generator\n"
+
+    # Requirements coverage matrix summary
+    matrix_file = project_dir / "stage_2_timing" / "cocotb" / "requirements_coverage_matrix.json"
+    if matrix_file.exists():
+        try:
+            matrix_data = json.loads(matrix_file.read_text(encoding="utf-8"))
+            cov_summary = matrix_data.get("coverage_summary", {})
+            matrix = matrix_data.get("matrix", [])
+            covered = sum(1 for m in matrix if m.get("cocotb_tests"))
+            uncovered = sum(1 for m in matrix if not m.get("cocotb_tests"))
+            content += "\n   **Requirements Coverage Matrix**:\n"
+            content += f"   - Coverage: {cov_summary.get('coverage_pct', 0)}%\n"
+            content += f"   - Requirements covered: {covered}\n"
+            content += f"   - Requirements uncovered: {uncovered}\n"
+        except (json.JSONDecodeError, Exception):
+            pass
+
     waveform_count = sum(1 for f in files_list if "waveforms" in f)
-    content += f"\n4. **Waveform diagrams created: {waveform_count}**\n\n"
+    content += f"\n5. **Waveform diagrams created: {waveform_count}**\n\n"
 
     return content
 
@@ -434,6 +485,56 @@ def _generate_stage4_details(project_dir: Path, project_config: Dict, files_list
 
     log_count = sum(1 for f in files_list if f.endswith(".log"))
     content += f"\n4. **Simulation logs: {log_count} log files saved**\n\n"
+
+    # Cocotb regression summary
+    cocotb_regression_dir = project_dir / "stage_4_sim" / "cocotb_regression"
+    cocotb_report_path = cocotb_regression_dir / "cocotb_regression_report.json"
+    if not cocotb_report_path.exists():
+        cocotb_report_path = project_dir / "stage_4_sim" / "cocotb_regression_report.json"
+    if cocotb_report_path.exists():
+        try:
+            report_data = json.loads(cocotb_report_path.read_text(encoding="utf-8"))
+            content += "5. **Cocotb Regression Results**\n"
+            content += f"   - Total tests: {report_data.get('total_tests', 'N/A')}\n"
+            content += f"   - Passed: {report_data.get('passed', 'N/A')}\n"
+            content += f"   - Failed: {report_data.get('failed', 'N/A')}\n"
+            seeds = report_data.get("seeds_run", [])
+            if seeds:
+                content += f"   - Seeds run: {', '.join(str(s) for s in seeds)}\n"
+            cov_summary = report_data.get("coverage_summary", {})
+            if cov_summary:
+                content += "   - Coverage:\n"
+                for key, val in cov_summary.items():
+                    content += f"     - {key}: {val}%\n"
+            content += "\n"
+        except (json.JSONDecodeError, Exception):
+            content += "5. **Cocotb Regression**: report found but could not be parsed\n\n"
+    elif cocotb_regression_dir.exists():
+        cocotb_logs = list(cocotb_regression_dir.glob("*.log"))
+        if cocotb_logs:
+            content += f"5. **Cocotb Regression**: {len(cocotb_logs)} log files found\n\n"
+
+    # Requirements coverage report summary
+    req_cov_report = project_dir / "stage_4_sim" / "requirements_coverage_report.json"
+    if req_cov_report.exists():
+        try:
+            rcr_data = json.loads(req_cov_report.read_text(encoding="utf-8"))
+            summary = rcr_data.get("summary", {})
+            content += "6. **Requirements Coverage Report**\n"
+            content += f"   - Total requirements: {summary.get('total_requirements', 'N/A')}\n"
+            content += f"   - Verified: {summary.get('verified', 'N/A')}\n"
+            content += f"   - Failed: {summary.get('failed', 'N/A')}\n"
+            content += f"   - Not run: {summary.get('not_run', 'N/A')}\n"
+            content += f"   - Coverage: {summary.get('requirements_coverage_pct', 0)}%\n"
+            by_cat = summary.get("by_category", {})
+            if by_cat:
+                content += "   - By category:\n"
+                for cat, cat_data in sorted(by_cat.items()):
+                    content += f"     - {cat}: {cat_data.get('verified', 0)}/{cat_data.get('total', 0)} ({cat_data.get('coverage_pct', 0)}%)\n"
+            content += "\n"
+        except (json.JSONDecodeError, Exception):
+            content += "6. **Requirements Coverage Report**: found but could not be parsed\n\n"
+
     return content
 
 
@@ -633,7 +734,7 @@ def build_prompt(stage_id: int, project_dir: Path, extra_context: str = "") -> s
     # Load requirement.md (with encoding auto-detection)
     req_context = ""
     req_file = project_dir / "requirement.md"
-    if req_file.exists() and stage_id <= 1:
+    if req_file.exists() and stage_id <= 2:
         for enc in ("utf-8", "utf-8-sig", "gbk", "gb2312", "latin-1"):
             try:
                 req_context = req_file.read_text(encoding=enc)
@@ -766,6 +867,32 @@ def _validate_stage1(project_dir: Path) -> Tuple[bool, List[str]]:
         doc_files = list((project_dir / "stage_1_spec").glob("*.md")) + list((project_dir / "stage_1_spec").glob("*.wavedrom"))
     if not doc_files:
         errors.append("No documentation found in stage_1_spec/docs/ (timing diagram or architecture doc)")
+
+    # ── Structured requirements check ──
+    struct_req_file = project_dir / "stage_1_spec" / "specs" / "structured_requirements.json"
+    if not struct_req_file.exists():
+        errors.append("Missing stage_1_spec/specs/structured_requirements.json")
+    else:
+        try:
+            req_data = json.loads(struct_req_file.read_text(encoding="utf-8"))
+            requirements = req_data.get("requirements", [])
+            if not requirements:
+                errors.append("structured_requirements.json: 'requirements' array is empty")
+            else:
+                has_functional = False
+                for req in requirements:
+                    for field in ("req_id", "category", "description", "testable"):
+                        if field not in req:
+                            errors.append(f"structured_requirements.json: requirement missing '{field}' field")
+                    if req.get("category") == "functional":
+                        has_functional = True
+                    if req.get("testable") and not req.get("acceptance_criteria"):
+                        errors.append(f"structured_requirements.json: testable requirement '{req.get('req_id', '?')}' missing acceptance_criteria")
+                if not has_functional:
+                    errors.append("structured_requirements.json: no requirement with category='functional' found")
+        except json.JSONDecodeError as e:
+            errors.append(f"structured_requirements.json: invalid JSON — {e}")
+
     return len(errors) == 0, errors
 
 
@@ -817,8 +944,65 @@ def _validate_stage2(project_dir: Path) -> Tuple[bool, List[str]]:
                 errors.append("No GoldenModel class found in stage_2_timing/cocotb/ Python files")
             if not has_timing_checker:
                 errors.append("No TimingChecker (or equivalent cycle-by-cycle comparison) found in stage_2_timing/cocotb/")
+
+            # ── UVM-like verification architecture checks ──
+            all_content = ""
+            for py_file in py_files:
+                try:
+                    all_content += py_file.read_text(encoding="utf-8", errors="replace") + "\n"
+                except Exception:
+                    pass
+            # Also check vf_bfm/ subdirectory
+            bfm_dir = cocotb_dir / "vf_bfm"
+            if bfm_dir.exists():
+                for py_file in bfm_dir.rglob("*.py"):
+                    try:
+                        all_content += py_file.read_text(encoding="utf-8", errors="replace") + "\n"
+                    except Exception:
+                        pass
+
+            has_driver = bool(re.search(r'class\s+\w*Driver', all_content)) and ("def send(" in all_content or "def drive(" in all_content)
+            has_monitor = bool(re.search(r'class\s+\w*Monitor', all_content)) and "def start(" in all_content
+            has_scoreboard = bool(re.search(r'class\s+\w*Scoreboard\b', all_content, re.IGNORECASE)) and "def check(" in all_content and "def report(" in all_content
+            has_coverage = ("CoverageCollector" in all_content or "coverpoint" in all_content.lower()) and "coverage_report" in all_content.lower()
+            has_constrained_random = ("ConstrainedRandom" in all_content or "random.Random" in all_content or "COCOTB_RANDOM_SEED" in all_content)
+
+            if not has_driver:
+                errors.append("No Driver class with send/drive method found in cocotb verification library")
+            if not has_monitor:
+                errors.append("No Monitor class with start method found in cocotb verification library")
+            if not has_scoreboard:
+                errors.append("No Scoreboard class with check+report methods found in cocotb verification library")
+            if not has_coverage:
+                errors.append("No coverage collection (CoverageCollector/coverpoint/coverage_report) found in cocotb verification library")
+            if not has_constrained_random:
+                errors.append("No constrained random (ConstrainedRandom/random.Random/COCOTB_RANDOM_SEED) found in cocotb verification library")
     else:
         errors.append("Missing stage_2_timing/cocotb/ directory")
+
+    # ── Requirements coverage matrix check ──
+    matrix_file = timing_dir / "cocotb" / "requirements_coverage_matrix.json"
+    if not matrix_file.exists():
+        errors.append("Missing stage_2_timing/cocotb/requirements_coverage_matrix.json")
+    else:
+        try:
+            matrix_data = json.loads(matrix_file.read_text(encoding="utf-8"))
+            matrix = matrix_data.get("matrix", [])
+            if not matrix:
+                errors.append("requirements_coverage_matrix.json: 'matrix' array is empty")
+            else:
+                for entry in matrix:
+                    if "req_id" not in entry:
+                        errors.append("requirements_coverage_matrix.json: matrix entry missing 'req_id'")
+                    cocotb_tests = entry.get("cocotb_tests", [])
+                    if not cocotb_tests:
+                        errors.append(f"requirements_coverage_matrix.json: req '{entry.get('req_id', '?')}' has no cocotb_tests mapped")
+            cov_summary = matrix_data.get("coverage_summary", {})
+            cov_pct = cov_summary.get("coverage_pct", 0)
+            if cov_pct <= 0:
+                errors.append("requirements_coverage_matrix.json: coverage_summary.coverage_pct must be > 0")
+        except json.JSONDecodeError as e:
+            errors.append(f"requirements_coverage_matrix.json: invalid JSON — {e}")
 
     return len(errors) == 0, errors
 
@@ -1041,6 +1225,59 @@ def _validate_stage4(project_dir: Path) -> Tuple[bool, List[str]]:
         errors.append("No latency detection test found in simulation logs or testbenches")
     if not has_backpressure_test:
         errors.append("No backpressure/stress test found in simulation logs or testbenches")
+
+    # ── Cocotb regression checks ──
+    cocotb_regression_dir = project_dir / "stage_4_sim" / "cocotb_regression"
+    has_cocotb_regression = False
+    if cocotb_regression_dir.exists():
+        cocotb_files = list(cocotb_regression_dir.rglob("*.py")) + list(cocotb_regression_dir.rglob("*.log"))
+        if cocotb_files:
+            has_cocotb_regression = True
+    # Also check for cocotb logs in sim_output
+    if not has_cocotb_regression and sim_output_dir.exists():
+        for log_file in sim_output_dir.glob("*.log"):
+            try:
+                content = log_file.read_text(encoding="utf-8", errors="ignore").lower()
+                if "cocotb" in content:
+                    has_cocotb_regression = True
+                    break
+            except Exception:
+                pass
+    if not has_cocotb_regression:
+        errors.append("No cocotb regression found — expected stage_4_sim/cocotb_regression/ directory or cocotb logs")
+
+    # Check cocotb_regression_report.json
+    cocotb_report_path = cocotb_regression_dir / "cocotb_regression_report.json" if cocotb_regression_dir.exists() else None
+    # Also check stage_4_sim root
+    if not cocotb_report_path or not cocotb_report_path.exists():
+        cocotb_report_path = project_dir / "stage_4_sim" / "cocotb_regression_report.json"
+    if cocotb_report_path and cocotb_report_path.exists():
+        try:
+            report_data = json.loads(cocotb_report_path.read_text(encoding="utf-8"))
+            failed = report_data.get("failed", -1)
+            if failed != 0:
+                errors.append(f"cocotb_regression_report.json: {failed} tests failed (expected 0)")
+            if "seeds_run" not in report_data:
+                errors.append("cocotb_regression_report.json: missing 'seeds_run' field")
+        except json.JSONDecodeError:
+            errors.append("cocotb_regression_report.json is not valid JSON")
+    else:
+        if has_cocotb_regression:
+            errors.append("cocotb_regression_report.json not found — regression report missing")
+
+    # ── Requirements coverage report check ──
+    req_cov_report = project_dir / "stage_4_sim" / "requirements_coverage_report.json"
+    if not req_cov_report.exists():
+        errors.append("Missing stage_4_sim/requirements_coverage_report.json")
+    else:
+        try:
+            rcr_data = json.loads(req_cov_report.read_text(encoding="utf-8"))
+            summary = rcr_data.get("summary", {})
+            req_cov_pct = summary.get("requirements_coverage_pct", 0)
+            if req_cov_pct <= 0:
+                errors.append("requirements_coverage_report.json: requirements_coverage_pct must be > 0")
+        except json.JSONDecodeError as e:
+            errors.append(f"requirements_coverage_report.json: invalid JSON — {e}")
 
     return len(errors) == 0, errors
 

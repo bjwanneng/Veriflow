@@ -25,6 +25,78 @@ Incorporate naming best practices from the coding style guidelines and apply the
 
 ## Tasks
 
+### 0. Parse and Structure Requirements
+
+Before analyzing the design, parse the requirement document into a structured format.
+
+#### 0.1 Requirements Clarity Check
+
+Evaluate the completeness of `requirement.md` across these dimensions:
+- **Functional requirements**: What the design must do (operations, algorithms, data transformations)
+- **Performance requirements**: Throughput, latency, frequency targets
+- **Interface requirements**: Port definitions, protocols, signal timing
+- **Boundary conditions / constraints**: Edge cases, error handling, resource limits
+
+If the requirement document is too vague or missing critical information (e.g., no functional description, no interface definition, no performance target), use the **AskUserQuestion** tool to ask the user to revise or confirm they want to proceed with incomplete requirements.
+
+#### 0.2 Generate structured_requirements.json
+
+Convert the natural-language requirements into a structured JSON file at `stage_1_spec/specs/structured_requirements.json`:
+
+```json
+{
+  "source_document": "requirement.md",
+  "parse_timestamp": "<ISO8601>",
+  "clarity_assessment": {
+    "overall_score": "clear|partial|vague",
+    "missing_areas": ["list of missing requirement areas, if any"]
+  },
+  "requirements": [
+    {
+      "req_id": "REQ-FUNC-001",
+      "category": "functional",
+      "description": "Detailed requirement description extracted from requirement.md",
+      "testable": true,
+      "acceptance_criteria": "Specific, measurable criteria to verify this requirement",
+      "derived_tests": ["test_basic_operation", "test_edge_case_zero"]
+    },
+    {
+      "req_id": "REQ-PERF-001",
+      "category": "performance",
+      "description": "Performance requirement description",
+      "testable": true,
+      "acceptance_criteria": "Throughput >= 1 word/cycle at 300MHz",
+      "derived_tests": ["test_throughput_measurement"]
+    },
+    {
+      "req_id": "REQ-IF-001",
+      "category": "interface",
+      "description": "Interface requirement description",
+      "testable": true,
+      "acceptance_criteria": "Valid-ready handshake compliant, no data loss under backpressure",
+      "derived_tests": ["test_backpressure_no_data_loss"]
+    },
+    {
+      "req_id": "REQ-CONS-001",
+      "category": "constraint",
+      "description": "Design constraint description",
+      "testable": false,
+      "acceptance_criteria": "",
+      "derived_tests": []
+    }
+  ]
+}
+```
+
+**req_id format**: `REQ-{FUNC|PERF|IF|CONS}-NNN` where:
+- `FUNC` = functional, `PERF` = performance, `IF` = interface, `CONS` = constraint
+
+**Rules**:
+- Every identifiable requirement from the document must be captured
+- At least 1 functional requirement must exist
+- All requirements with `testable: true` must have non-empty `acceptance_criteria`
+- `derived_tests` lists the cocotb test names that will verify this requirement (populated in Stage 2)
+
 ### 1. Analyze Requirements and Module Partitioning
 
 Analyze the requirement document and decompose the design into multiple modules.
@@ -286,6 +358,10 @@ If execution_mode == "parameterized", use AskUserQuestion to confirm before gene
 - Module names must be snake_case
 - One module must have `\"module_type\": \"top\"`
 - All fields shown in the JSON example should be included when applicable
+- **Must generate `stage_1_spec/specs/structured_requirements.json`**
+- The `requirements` array must be non-empty, with each item having `req_id`, `category`, `description`, and `testable` fields
+- At least 1 requirement with `category: "functional"` must exist
+- All requirements with `testable: true` must have non-empty `acceptance_criteria`
 
 ## Output
 Print a summary: module count, pipeline depth, estimated resource usage, and whether user approvals were obtained (if in parameterized mode).

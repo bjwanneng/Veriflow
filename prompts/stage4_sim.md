@@ -135,6 +135,97 @@ Test intermittent valid input (bubbles in the pipeline):
    timeout 60 vvp stage_4_sim/sim_output/sim_timing.vvp > stage_4_sim/sim_output/timing_tests.log 2>&1
    ```
 
+### Part D: Cocotb-Based Regression
+
+10. Copy the entire `stage_2_timing/cocotb/` directory to `stage_4_sim/cocotb_regression/`:
+    ```bash
+    cp -r stage_2_timing/cocotb/* stage_4_sim/cocotb_regression/
+    ```
+
+11. Update the Makefile in `stage_4_sim/cocotb_regression/` — change `VERILOG_SOURCES` to point to Stage 3 RTL:
+    ```makefile
+    VERILOG_SOURCES += $(PWD)/../../stage_3_codegen/rtl/*.v
+    ```
+
+12. Run cocotb regression with default seed:
+    ```bash
+    cd stage_4_sim/cocotb_regression
+    export PYTHONPATH=$(pwd):$PYTHONPATH
+    export COCOTB_RANDOM_SEED=42
+    make sim 2>&1 | tee cocotb_default_seed.log
+    ```
+
+13. Run cocotb regression with 3 different seeds to improve coverage:
+    ```bash
+    for seed in 12345 67890 24680; do
+        export COCOTB_RANDOM_SEED=$seed
+        make sim 2>&1 | tee cocotb_seed_${seed}.log
+        make clean
+    done
+    ```
+
+14. Generate `cocotb_regression_report.json` in `stage_4_sim/cocotb_regression/`:
+    ```json
+    {
+        "total_tests": <number>,
+        "passed": <number>,
+        "failed": <number>,
+        "seeds_run": [42, 12345, 67890, 24680],
+        "per_seed_results": {
+            "42": {"passed": <n>, "failed": <n>},
+            "12345": {"passed": <n>, "failed": <n>},
+            "67890": {"passed": <n>, "failed": <n>},
+            "24680": {"passed": <n>, "failed": <n>}
+        },
+        "coverage_summary": {
+            "data_range_pct": <float>,
+            "protocol_corner_cases_pct": <float>
+        }
+    }
+    ```
+
+15. If any cocotb test fails, analyze the failure, fix the RTL or test, and re-run until all seeds pass.
+
+### Part E: Requirements Coverage Report
+
+16. Generate `stage_4_sim/requirements_coverage_report.json` by reading the `requirements_coverage_matrix.json` from `stage_2_timing/cocotb/` (or `stage_4_sim/cocotb_regression/`) and updating it with actual simulation results:
+
+```json
+{
+  "generated_at": "<ISO8601 timestamp>",
+  "source_matrix": "requirements_coverage_matrix.json",
+  "requirements": [
+    {
+      "req_id": "REQ-FUNC-001",
+      "category": "functional",
+      "description": "Requirement description",
+      "verification_status": "verified",
+      "cocotb_tests_run": ["test_directed_basic"],
+      "cocotb_tests_passed": ["test_directed_basic"],
+      "notes": ""
+    }
+  ],
+  "summary": {
+    "total_requirements": 0,
+    "verified": 0,
+    "failed": 0,
+    "not_run": 0,
+    "requirements_coverage_pct": 0.0,
+    "by_category": {
+      "functional": {"total": 0, "verified": 0, "coverage_pct": 0.0},
+      "performance": {"total": 0, "verified": 0, "coverage_pct": 0.0},
+      "interface": {"total": 0, "verified": 0, "coverage_pct": 0.0},
+      "constraint": {"total": 0, "verified": 0, "coverage_pct": 0.0}
+    }
+  }
+}
+```
+
+For each requirement in the matrix:
+- If all mapped cocotb tests passed → `verification_status: "verified"`
+- If any mapped cocotb test failed → `verification_status: "failed"`
+- If no mapped cocotb test was run → `verification_status: "not_run"`
+
 ## Constraints
 - ALL testbenches must have self-checking (PASS/FAIL) — no waveform-only tests
 - ALL testbenches must have $finish and timeout watchdog
@@ -142,9 +233,13 @@ Test intermittent valid input (bubbles in the pipeline):
 - Unit tests must all pass before running integration test
 - **Coverage required**: All testbenches must generate VCD files in `stage_4_sim/coverage/`
 - **Simulation must complete**: All simulations must run to completion with "ALL TESTS PASSED" or equivalent
+- **Cocotb regression must run**: The cocotb-based regression from Stage 2 must be executed in `stage_4_sim/cocotb_regression/`
+- **All cocotb runs must record seed**: Every cocotb run must log the `COCOTB_RANDOM_SEED` used
+- **Must generate `cocotb_regression_report.json`**: Report must contain total_tests, passed, failed, seeds_run, and coverage_summary
+- **Must generate `stage_4_sim/requirements_coverage_report.json`**: Report must contain requirements array with verification_status and summary with `requirements_coverage_pct > 0`
 
 ## Output
-Print: unit test results (per-module PASS/FAIL), integration test results, overall verdict.
+Print: unit test results (per-module PASS/FAIL), integration test results, cocotb regression results (per-seed pass/fail, coverage summary), overall verdict.
 
 ### After Validation: Confirm to Proceed
 

@@ -45,6 +45,7 @@ stage_3_codegen/rtl/
 stage_3_codegen/tb_autogen/
 stage_4_sim/tb/
 stage_4_sim/sim_output/
+stage_4_sim/cocotb_regression/
 stage_5_synth/
 .veriflow/stage_completed/
 .veriflow/approvals/
