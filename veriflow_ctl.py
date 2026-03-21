@@ -67,10 +67,10 @@ STAGE_PREREQUISITES = {
     0: [],
     1: [0],
     2: [0, 1],
-    3: [0, 1, 2],
-    4: [0, 1, 2, 3],
+    3: [0, 1],  # Quick模式不需要stage2
+    4: [0, 1, 3],  # Quick模式不需要stage2
     5: [0, 1, 2, 3, 4],
-    6: [0, 1, 2, 3, 4, 5],
+    6: [0, 1, 3, 4],  # Quick模式不需要stage2和stage5
 }
 STAGE_ROLLBACK_TARGETS = {
     1: 0,
@@ -103,7 +103,23 @@ def get_last_completed_stage(project_dir: Path) -> int:
 
 def check_prerequisites(project_dir: Path, stage_id: int) -> Tuple[bool, List[str]]:
     errors = []
-    for prereq in STAGE_PREREQUISITES.get(stage_id, []):
+    config = load_project_config(project_dir)
+    mode = config.get("mode", "standard").lower()
+
+    # 根据模式确定需要的前置条件
+    required_prereqs = STAGE_PREREQUISITES.get(stage_id, []).copy()
+
+    # Quick模式跳过stage2和stage5
+    if mode == "quick":
+        # Quick模式下，stage3不需要stage2，stage4不需要stage2，stage6不需要stage2和stage5
+        if stage_id == 3:
+            required_prereqs = [0, 1]  # 只需要stage0和stage1
+        elif stage_id == 4:
+            required_prereqs = [0, 1, 3]  # 只需要stage0,1,3
+        elif stage_id == 6:
+            required_prereqs = [0, 1, 3, 4]  # 只需要stage0,1,3,4
+
+    for prereq in required_prereqs:
         if not is_stage_complete(project_dir, prereq):
             errors.append(f"Stage {prereq} ({STAGES[prereq]['name']}) not completed")
     return len(errors) == 0, errors
@@ -771,12 +787,29 @@ def validate_stage(stage_id: int, project_dir: Path) -> Tuple[bool, List[str]]:
 
 def _validate_stage0(project_dir: Path) -> Tuple[bool, List[str]]:
     errors = []
-    for d in ["stage_1_spec", "stage_2_timing", "stage_3_codegen/rtl",
-              "stage_4_sim/tb", "stage_5_synth", ".veriflow"]:
+    config = load_project_config(project_dir)
+    mode = config.get("mode", "standard").lower()
+
+    # Common directories for all modes
+    common_dirs = ["stage_1_spec", "stage_3_codegen/rtl",
+                   "stage_4_sim/tb", "stage_4_sim/sim_output", ".veriflow", "reports"]
+
+    # Standard/Enterprise only directories
+    standard_dirs = ["stage_2_timing", "stage_5_synth"]
+
+    # Check common directories
+    for d in common_dirs:
         if not (project_dir / d).exists():
             errors.append(f"Missing directory: {d}")
-    config = project_dir / ".veriflow" / "project_config.json"
-    if not config.exists():
+
+    # Check mode-specific directories
+    if mode in ("standard", "enterprise"):
+        for d in standard_dirs:
+            if not (project_dir / d).exists():
+                errors.append(f"Missing directory: {d} (required for {mode} mode)")
+
+    config_file = project_dir / ".veriflow" / "project_config.json"
+    if not config_file.exists():
         errors.append("Missing .veriflow/project_config.json")
     return len(errors) == 0, errors
 
@@ -898,6 +931,20 @@ def _validate_stage1(project_dir: Path) -> Tuple[bool, List[str]]:
 
 def _validate_stage2(project_dir: Path) -> Tuple[bool, List[str]]:
     errors = []
+    config = load_project_config(project_dir)
+    mode = config.get("mode", "standard").lower()
+
+    # Quick模式跳过stage2验证
+    if mode == "quick":
+        # Quick模式下stage2是可选的
+        timing_dir = project_dir / "stage_2_timing"
+        if not timing_dir.exists():
+            # Quick模式允许没有stage2目录
+            return True, []
+        # 如果有stage2目录，仍然检查内容完整性
+        # 但不强制要求
+
+    # Standard/Enterprise模式的完整检查
     timing_dir = project_dir / "stage_2_timing"
     scenarios = list(timing_dir.rglob("*.yaml")) + list(timing_dir.rglob("*.yml"))
     if not scenarios:
@@ -1046,19 +1093,37 @@ def _validate_stage3(project_dir: Path) -> Tuple[bool, List[str]]:
     else:
         # 检查是否有 lint 报告
         lint_report_found = False
+        lint_report_files = []
         if reports_dir.exists():
             for report_file in list(reports_dir.glob("*.log")) + list(reports_dir.glob("*.rpt")) + list(reports_dir.glob("*.json")):
                 if "lint" in report_file.name.lower():
                     lint_report_found = True
+                    lint_report_files.append(report_file)
                     break
         # 也检查 stage_3_codegen 根目录
         if not lint_report_found:
             for report_file in list((project_dir / "stage_3_codegen").glob("*.log")) + list((project_dir / "stage_3_codegen").glob("*.rpt")):
                 if "lint" in report_file.name.lower():
                     lint_report_found = True
+                    lint_report_files.append(report_file)
                     break
         if not lint_report_found:
             errors.append("No lint report found in stage_3_codegen/reports/ or stage_3_codegen/")
+        else:
+            # 检查lint报告是否是伪造的 - 检测常见的伪造模式
+            fake_patterns = [
+                "Quick mode", "no EDA tools", "no iverilog",
+                "skipping lint", "lint skipped", "fake lint",
+                "Lint Step 1: RTL only - PASSED"
+            ]
+            for report_file in lint_report_files:
+                try:
+                    report_content = report_file.read_text(encoding="utf-8", errors="ignore")
+                    for pattern in fake_patterns:
+                        if pattern.lower() in report_content.lower():
+                            errors.append(f"Lint report {report_file.name} appears to be fake — contains forbidden pattern: '{pattern}'")
+                except Exception:
+                    pass
 
     # Testbench 检查
     tb_files = list(tb_autogen_dir.rglob("*.v")) if tb_autogen_dir.exists() else []
@@ -1107,7 +1172,8 @@ def _check_iverilog_compile(verilog_files: List[Path]) -> List[str]:
     if not iverilog:
         iverilog = shutil.which("iverilog.exe", path=env.get("PATH"))
     if not iverilog:
-        return []  # silently skip if not installed
+        # 不允许静默跳过 - 要求iverilog必须可用
+        return ["iverilog not found in PATH. Please install iverilog (part of oss-cad-suite)."]
 
     # Use a temp file for output — cross-platform (avoids /dev/null vs NUL)
     tmp = None
@@ -1126,7 +1192,7 @@ def _check_iverilog_compile(verilog_files: List[Path]) -> List[str]:
     except subprocess.TimeoutExpired:
         errors.append("iverilog compilation timed out (>60s)")
     except FileNotFoundError:
-        pass
+        errors.append("iverilog execution failed - file not found")
     finally:
         if tmp and os.path.exists(tmp.name):
             try:
@@ -1138,6 +1204,9 @@ def _check_iverilog_compile(verilog_files: List[Path]) -> List[str]:
 
 def _validate_stage4(project_dir: Path) -> Tuple[bool, List[str]]:
     errors = []
+    config = load_project_config(project_dir)
+    mode = config.get("mode", "standard").lower()
+
     tb_dir = project_dir / "stage_4_sim" / "tb"
     sim_output_dir = project_dir / "stage_4_sim" / "sim_output"
     coverage_dir = project_dir / "stage_4_sim" / "coverage"
@@ -1156,16 +1225,49 @@ def _validate_stage4(project_dir: Path) -> Tuple[bool, List[str]]:
             sim_completed = True
             for log_file in log_files:
                 content = log_file.read_text(encoding="utf-8", errors="ignore")
-                if "FAIL" in content or "TIMEOUT" in content:
-                    errors.append(f"Simulation log {log_file.name} contains FAIL/TIMEOUT")
-                    all_tests_passed = False
-                # Verify that the log contains some positive completion indicator
-                has_pass = any(kw in content for kw in [
-                    "ALL TESTS PASSED", "PASSED", "PASS", "Test passed",
-                    "Simulation complete", "simulation finished",
-                ])
-                if not has_pass and all_tests_passed:
-                    errors.append(f"Simulation log {log_file.name}: no PASS/completion indicator found")
+
+                # 检查伪造日志模式 - 快速失败
+                fake_patterns = [
+                    "Quick mode", "no EDA tools", "no simulation",
+                    "simulation skipped", "fake simulation", "simulated without tools",
+                    "Lint Step", "no iverilog", "no vvp"
+                ]
+                is_fake = False
+                for pattern in fake_patterns:
+                    if pattern.lower() in content.lower():
+                        errors.append(f"Simulation log {log_file.name} appears to be fake — contains forbidden pattern: '{pattern}'")
+                        is_fake = True
+                        all_tests_passed = False
+
+                if not is_fake:
+                    if "FAIL" in content or "TIMEOUT" in content:
+                        errors.append(f"Simulation log {log_file.name} contains FAIL/TIMEOUT")
+                        all_tests_passed = False
+
+                    # 验证日志包含实际仿真器输出的特征
+                    has_iverilog_signature = any(kw in content for kw in [
+                        "VCD info", "dumpfile", "dumpvars", "iverilog",
+                        "Icarus Verilog", "VCD dump", "At time",
+                    ])
+                    has_vvp_signature = any(kw in content for kw in [
+                        "vvp", "VVP", "Running simulation", "Simulation interrupted",
+                    ])
+                    has_test_signals = any(kw in content for kw in [
+                        "clk", "rst", "valid", "ready", "data",
+                        "[TEST", "[INFO]", "[PASS]", "[FAIL]"
+                    ])
+
+                    # 至少需要有一些仿真特征
+                    if not (has_iverilog_signature or has_vvp_signature or has_test_signals):
+                        errors.append(f"Simulation log {log_file.name}: no simulation signature found (iverilog/vvp/test signals missing)")
+
+                    # Verify that the log contains some positive completion indicator
+                    has_pass = any(kw in content for kw in [
+                        "ALL TESTS PASSED", "PASSED", "PASS", "Test passed",
+                        "Simulation complete", "simulation finished",
+                    ])
+                    if not has_pass and all_tests_passed:
+                        errors.append(f"Simulation log {log_file.name}: no PASS/completion indicator found")
     if not sim_completed:
         errors.append("No simulation logs found in stage_4_sim/sim_output/ - simulation may not have run")
 
@@ -1197,73 +1299,75 @@ def _validate_stage4(project_dir: Path) -> Tuple[bool, List[str]]:
     if not coverage_found:
         errors.append("No coverage data found (.vcd, .dat, .saif) - coverage analysis missing")
 
-    # ── Timing-specific test checks ──
-    has_latency_test = False
-    has_backpressure_test = False
-    if sim_output_dir.exists():
-        for log_file in sim_output_dir.glob("*.log"):
-            try:
-                content = log_file.read_text(encoding="utf-8", errors="ignore").lower()
-                if "latency" in content:
-                    has_latency_test = True
-                if "backpressure" in content or "stress" in content or "back_pressure" in content:
-                    has_backpressure_test = True
-            except Exception:
-                pass
-    # Also check testbench source files for timing tests
-    if tb_dir.exists():
-        for tb_file in tb_dir.rglob("*.v"):
-            try:
-                content = tb_file.read_text(encoding="utf-8", errors="replace").lower()
-                if "latency" in content:
-                    has_latency_test = True
-                if "backpressure" in content or "stress" in content or "back_pressure" in content:
-                    has_backpressure_test = True
-            except Exception:
-                pass
-    if not has_latency_test:
-        errors.append("No latency detection test found in simulation logs or testbenches")
-    if not has_backpressure_test:
-        errors.append("No backpressure/stress test found in simulation logs or testbenches")
+    # ── Timing-specific test checks ── (Standard/Enterprise only)
+    if mode in ("standard", "enterprise"):
+        has_latency_test = False
+        has_backpressure_test = False
+        if sim_output_dir.exists():
+            for log_file in sim_output_dir.glob("*.log"):
+                try:
+                    content = log_file.read_text(encoding="utf-8", errors="ignore").lower()
+                    if "latency" in content:
+                        has_latency_test = True
+                    if "backpressure" in content or "stress" in content or "back_pressure" in content:
+                        has_backpressure_test = True
+                except Exception:
+                    pass
+        # Also check testbench source files for timing tests
+        if tb_dir.exists():
+            for tb_file in tb_dir.rglob("*.v"):
+                try:
+                    content = tb_file.read_text(encoding="utf-8", errors="replace").lower()
+                    if "latency" in content:
+                        has_latency_test = True
+                    if "backpressure" in content or "stress" in content or "back_pressure" in content:
+                        has_backpressure_test = True
+                except Exception:
+                    pass
+        if not has_latency_test:
+            errors.append("No latency detection test found in simulation logs or testbenches")
+        if not has_backpressure_test:
+            errors.append("No backpressure/stress test found in simulation logs or testbenches")
 
-    # ── Cocotb regression checks ──
-    cocotb_regression_dir = project_dir / "stage_4_sim" / "cocotb_regression"
-    has_cocotb_regression = False
-    if cocotb_regression_dir.exists():
-        cocotb_files = list(cocotb_regression_dir.rglob("*.py")) + list(cocotb_regression_dir.rglob("*.log"))
-        if cocotb_files:
-            has_cocotb_regression = True
-    # Also check for cocotb logs in sim_output
-    if not has_cocotb_regression and sim_output_dir.exists():
-        for log_file in sim_output_dir.glob("*.log"):
-            try:
-                content = log_file.read_text(encoding="utf-8", errors="ignore").lower()
-                if "cocotb" in content:
-                    has_cocotb_regression = True
-                    break
-            except Exception:
-                pass
-    if not has_cocotb_regression:
-        errors.append("No cocotb regression found — expected stage_4_sim/cocotb_regression/ directory or cocotb logs")
+    # ── Cocotb regression checks ── (Standard/Enterprise only)
+    if mode in ("standard", "enterprise"):
+        cocotb_regression_dir = project_dir / "stage_4_sim" / "cocotb_regression"
+        has_cocotb_regression = False
+        if cocotb_regression_dir.exists():
+            cocotb_files = list(cocotb_regression_dir.rglob("*.py")) + list(cocotb_regression_dir.rglob("*.log"))
+            if cocotb_files:
+                has_cocotb_regression = True
+        # Also check for cocotb logs in sim_output
+        if not has_cocotb_regression and sim_output_dir.exists():
+            for log_file in sim_output_dir.glob("*.log"):
+                try:
+                    content = log_file.read_text(encoding="utf-8", errors="ignore").lower()
+                    if "cocotb" in content:
+                        has_cocotb_regression = True
+                        break
+                except Exception:
+                    pass
+        if not has_cocotb_regression:
+            errors.append("No cocotb regression found — expected stage_4_sim/cocotb_regression/ directory or cocotb logs")
 
-    # Check cocotb_regression_report.json
-    cocotb_report_path = cocotb_regression_dir / "cocotb_regression_report.json" if cocotb_regression_dir.exists() else None
-    # Also check stage_4_sim root
-    if not cocotb_report_path or not cocotb_report_path.exists():
-        cocotb_report_path = project_dir / "stage_4_sim" / "cocotb_regression_report.json"
-    if cocotb_report_path and cocotb_report_path.exists():
-        try:
-            report_data = json.loads(cocotb_report_path.read_text(encoding="utf-8"))
-            failed = report_data.get("failed", -1)
-            if failed != 0:
-                errors.append(f"cocotb_regression_report.json: {failed} tests failed (expected 0)")
-            if "seeds_run" not in report_data:
-                errors.append("cocotb_regression_report.json: missing 'seeds_run' field")
-        except json.JSONDecodeError:
-            errors.append("cocotb_regression_report.json is not valid JSON")
-    else:
-        if has_cocotb_regression:
-            errors.append("cocotb_regression_report.json not found — regression report missing")
+        # Check cocotb_regression_report.json
+        cocotb_report_path = cocotb_regression_dir / "cocotb_regression_report.json" if cocotb_regression_dir.exists() else None
+        # Also check stage_4_sim root
+        if not cocotb_report_path or not cocotb_report_path.exists():
+            cocotb_report_path = project_dir / "stage_4_sim" / "cocotb_regression_report.json"
+        if cocotb_report_path and cocotb_report_path.exists():
+            try:
+                report_data = json.loads(cocotb_report_path.read_text(encoding="utf-8"))
+                failed = report_data.get("failed", -1)
+                if failed != 0:
+                    errors.append(f"cocotb_regression_report.json: {failed} tests failed (expected 0)")
+                if "seeds_run" not in report_data:
+                    errors.append("cocotb_regression_report.json: missing 'seeds_run' field")
+            except json.JSONDecodeError:
+                errors.append("cocotb_regression_report.json is not valid JSON")
+        else:
+            if has_cocotb_regression:
+                errors.append("cocotb_regression_report.json not found — regression report missing")
 
     # ── Requirements coverage report check ──
     req_cov_report = project_dir / "stage_4_sim" / "requirements_coverage_report.json"
@@ -1284,6 +1388,17 @@ def _validate_stage4(project_dir: Path) -> Tuple[bool, List[str]]:
 
 def _validate_stage5(project_dir: Path) -> Tuple[bool, List[str]]:
     errors = []
+    config = load_project_config(project_dir)
+    mode = config.get("mode", "standard").lower()
+
+    # Quick模式跳过stage5验证
+    if mode == "quick":
+        synth_dir = project_dir / "stage_5_synth"
+        if not synth_dir.exists():
+            # Quick模式允许没有stage5目录
+            return True, []
+
+    # Standard/Enterprise模式的完整检查
     synth_dir = project_dir / "stage_5_synth"
     ys_files = list(synth_dir.rglob("*.ys")) if synth_dir.exists() else []
     if not ys_files:
@@ -1411,7 +1526,22 @@ def cmd_status(project_dir: Path) -> int:
 def cmd_next(project_dir: Path, extra_context: str = "") -> int:
     """Output the prompt for the next stage. Refuses if prerequisites unmet."""
     last = get_last_completed_stage(project_dir)
+    config = load_project_config(project_dir)
+    mode = config.get("mode", "standard").lower()
+
+    # 根据模式确定下一个stage
     next_stage = last + 1
+
+    # Quick模式跳过stage2和stage5
+    if mode == "quick":
+        if next_stage == 2:
+            # 跳过stage2，直接到stage3
+            mark_stage_complete(project_dir, 2, "Skipped in Quick mode")
+            next_stage = 3
+        elif next_stage == 5:
+            # 跳过stage5，直接到stage6
+            mark_stage_complete(project_dir, 5, "Skipped in Quick mode")
+            next_stage = 6
 
     if next_stage > 6:
         print("ALL_STAGES_COMPLETE")

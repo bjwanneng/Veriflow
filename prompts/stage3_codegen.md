@@ -78,6 +78,15 @@ After generating the RTL, mentally trace through the `cycle_behavior_table` scen
 // ──────────────────────────────────────────────
 ```
 
+## CRITICAL ANTI-FORGERY RULES
+
+**You MUST follow these rules. Violation is a pipeline-breaking offense.**
+
+1. **NEVER use Write or Edit tools to create lint .log files.** All lint `.log` files must be produced by iverilog command redirection (`> file.log 2>&1`). If lint fails, report the failure honestly — do NOT fabricate passing logs.
+2. **NEVER write fake lint reports.** Never write "Quick mode, no EDA tools available" or similar fake lint results. You MUST run actual iverilog compilation.
+3. **If iverilog is not installed**, you MUST report this to the user. Do NOT skip lint and pretend it ran.
+4. **All lint reports must contain actual iverilog output.** The log file should show iverilog version, compilation command, and actual warnings/errors.
+
 ## Tasks
 
 ### 1. Read Specification JSON
@@ -428,24 +437,30 @@ endmodule
 
 ### 4. Compile All RTL Files (Lint Step 1)
 
+**CRITICAL: YOU MUST ACTUALLY RUN THIS. NO FAKING.**
+
 After generating all files, compile together (first lint step):
 
 ```bash
 # Add EDA tools to PATH (adjust for your platform)
 export PATH="/c/oss-cad-suite/bin:/c/oss-cad-suite/lib:$PATH"
 mkdir -p stage_3_codegen/reports
-iverilog -g2005 -Wall -o /dev/null stage_3_codegen/rtl/*.v > stage_3_codegen/reports/lint_step1.log 2>&1
-# NOTE: On Windows, use NUL instead of /dev/null, or redirect output to a temp file.
-# If `tee` is unavailable, use file redirection: > file.log 2>&1
+# Use a temp file for output instead of /dev/null (cross-platform)
+iverilog -g2005 -Wall -o stage_3_codegen/reports/lint_step1.tmp.vvp stage_3_codegen/rtl/*.v > stage_3_codegen/reports/lint_step1.log 2>&1
+# Clean up temp file
+rm -f stage_3_codegen/reports/lint_step1.tmp.vvp
 ```
 
 ### 5. Compile Automatic Testbench (Lint Step 2)
 
+**CRITICAL: YOU MUST ACTUALLY RUN THIS. NO FAKING.**
+
 Second lint step - compile with testbenches:
 
 ```bash
-iverilog -g2005 -Wall -o /dev/null stage_3_codegen/rtl/*.v stage_3_codegen/tb_autogen/*.v > stage_3_codegen/reports/lint_step2.log 2>&1
-# NOTE: On Windows, use NUL instead of /dev/null, or redirect output to a temp file.
+iverilog -g2005 -Wall -o stage_3_codegen/reports/lint_step2.tmp.vvp stage_3_codegen/rtl/*.v stage_3_codegen/tb_autogen/*.v > stage_3_codegen/reports/lint_step2.log 2>&1
+# Clean up temp file
+rm -f stage_3_codegen/reports/lint_step2.tmp.vvp
 ```
 
 ### 6. Generate Lint Report
