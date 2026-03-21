@@ -1,0 +1,151 @@
+{
+  "_comment": "Project configuration templates for different execution modes",
+  "version": "8.2.0",
+
+  "modes": {
+    "quick": {
+      "display_name": "快速模式 (Quick Mode)",
+      "description": "适合简单模块、原型验证、快速迭代。跳过复杂验证，最小化开销。",
+      "stages": [0, 1, 3, 4, 6],
+      "stage_names": {
+        "0": "项目初始化",
+        "1": "架构规格 (简化)",
+        "3": "RTL代码生成",
+        "4": "仿真验证",
+        "6": "项目收尾"
+      },
+      "validation_level": "minimal",
+      "features": {
+        "cocotb": false,
+        "timing_contracts": false,
+        "requirements_matrix": false,
+        "uvm_like_lib": false,
+        "coverage_collection": false,
+        "golden_trace": false,
+        "synthesis": false
+      },
+      "prompt_style": "concise",
+      "testbench_depth": "minimal"
+    },
+
+    "standard": {
+      "display_name": "标准模式 (Standard Mode)",
+      "description": "推荐默认模式。完整7阶段流程，需求驱动验证，适合大多数项目。",
+      "stages": [0, 1, 2, 3, 4, 5, 6],
+      "stage_names": {
+        "0": "项目初始化",
+        "1": "微架构规格",
+        "2": "虚拟时序建模",
+        "3": "RTL代码生成",
+        "4": "仿真验证",
+        "5": "综合分析",
+        "6": "项目收尾"
+      },
+      "validation_level": "standard",
+      "features": {
+        "cocotb": true,
+        "timing_contracts": true,
+        "requirements_matrix": true,
+        "uvm_like_lib": true,
+        "coverage_collection": true,
+        "golden_trace": true,
+        "synthesis": true
+      },
+      "prompt_style": "standard",
+      "testbench_depth": "standard"
+    },
+
+    "enterprise": {
+      "display_name": "企业模式 (Enterprise Mode)",
+      "description": "工业级完整流程。包含子阶段、形式化验证、全面质量检查。适合关键项目。",
+      "stages": [0, 1, "1.5", 2, 3, "3.5", 4, 5, 6],
+      "stage_names": {
+        "0": "项目初始化",
+        "1": "微架构规格初稿",
+        "1.5": "架构评审与细化",
+        "2": "虚拟时序建模",
+        "3": "RTL代码生成",
+        "3.5": "代码评审与优化",
+        "4": "仿真验证",
+        "5": "综合分析",
+        "6": "项目收尾"
+      },
+      "validation_level": "strict",
+      "features": {
+        "cocotb": true,
+        "timing_contracts": true,
+        "requirements_matrix": true,
+        "uvm_like_lib": true,
+        "coverage_collection": true,
+        "golden_trace": true,
+        "synthesis": true,
+        "formal_verification": true,
+        "code_review": true,
+        "multi_seed_regression": true,
+        "power_analysis": true
+      },
+      "prompt_style": "detailed",
+      "testbench_depth": "thorough"
+    }
+  },
+
+  "validation_levels": {
+    "minimal": {
+      "description": "最小验证：确保基本文件存在且可编译",
+      "checks": {
+        "stage0": ["dirs_exist", "config_exists"],
+        "stage1": ["spec_json_exists"],
+        "stage2": ["yaml_exists"],
+        "stage3": ["rtl_compiles", "no_placeholders"],
+        "stage4": ["sim_has_logs", "no_failures"],
+        "stage6": ["final_report_exists"]
+      }
+    },
+    "standard": {
+      "description": "标准验证：完整的质量检查",
+      "checks": {
+        "stage0": ["dirs_exist", "config_exists", "toolchain_detected"],
+        "stage1": ["spec_json_valid", "modules_defined", "ports_specified", "connectivity_defined"],
+        "stage2": ["yaml_valid", "golden_traces", "cocotb_structure", "requirements_matrix"],
+        "stage3": ["rtl_compiles", "lint_clean", "timing_contracts", "spec_coverage"],
+        "stage4": ["sim_passes", "vcd_generated", "requirements_coverage", "cocotb_regression"],
+        "stage5": ["synth_completes", "timing_met", "report_generated"],
+        "stage6": ["final_report_complete"]
+      }
+    },
+    "strict": {
+      "description": "严格验证：企业级质量门控",
+      "checks": {
+        "stage0": ["dirs_exist", "config_exists", "toolchain_detected", "coding_style_defined"],
+        "stage1": ["spec_json_valid", "modules_defined", "ports_specified", "connectivity_defined", "timing_contracts_defined", "architecture_reviewed"],
+        "stage2": ["yaml_valid", "golden_traces", "cocotb_structure", "requirements_matrix", "assertions_defined"],
+        "stage3": ["rtl_compiles", "lint_clean", "timing_contracts", "spec_coverage", "code_reviewed", "cdc_checked"],
+        "stage4": ["sim_passes", "vcd_generated", "requirements_coverage", "cocotb_regression", "multi_seed", "formal_checked"],
+        "stage5": ["synth_completes", "timing_met", "report_generated", "power_analyzed"],
+        "stage6": ["final_report_complete", "lessons_learned", "reusable_ip_extracted"]
+      }
+    }
+  },
+
+  "prompt_config": {
+    "concise": {
+      "max_length": "2000 tokens",
+      "include_examples": false,
+      "include_templates": false,
+      "checklist_items": 5
+    },
+    "standard": {
+      "max_length": "4000 tokens",
+      "include_examples": true,
+      "include_templates": true,
+      "checklist_items": 10
+    },
+    "detailed": {
+      "max_length": "8000 tokens",
+      "include_examples": true,
+      "include_templates": true,
+      "include_best_practices": true,
+      "checklist_items": 15
+    }
+  }
+}

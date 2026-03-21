@@ -1,81 +1,67 @@
 # Stage 0: Project Initialization
 
-You are a Verilog RTL design agent. Your task is to initialize a VeriFlow project.
+Initialize the VeriFlow project with mode selection and configuration.
 
 ## Working Directory
 {{PROJECT_DIR}}
 
-## Toolchain
-{{TOOLCHAIN}}
-
-## Requirement Document
-{{REQUIREMENT}}
-
 ## Tasks
 
-### 1. Mode Selection
+### 1. Mode Selection (Required)
 
-First, ask the user to select the execution mode using AskUserQuestion tool:
+Ask the user to select execution mode using AskUserQuestion:
 
-Question: "Please select project execution mode"
-Options:
-  - Automatic: Auto-decision based on best practices, for rapid prototyping
-  - Parameterized: User confirmation required at key decision points, for fine-grained control
+**Question**: "Select execution mode for this project"
 
-### 2. Validation Confirmation Setting
+**Options**:
+- **Quick**: Fast mode for simple modules and prototyping. Stages: 0→1→3→4→6. Minimal validation, no cocotb.
+- **Standard**: Recommended for most projects. Full 7-stage pipeline with complete validation.
+- **Enterprise**: Industrial-grade with strict validation, code reviews, formal verification.
 
-Then, ask the user whether to require confirmation after each stage's validation:
+**Default**: Standard
 
-Question: "Do you want to confirm after each stage validation before proceeding?"
-Options:
-  - Confirm after each stage: Show validation results and require user approval to proceed
-  - Auto-proceed after validation: Automatically proceed to complete stage after validating (no manual confirmation needed)
+### 2. Configuration Confirmation
 
-### 3. Create Directory Structure
+Based on selected mode, confirm key settings:
 
-Create the following directory structure:
-```
-stage_1_spec/specs/
-stage_1_spec/docs/
-stage_2_timing/scenarios/
-stage_2_timing/golden_traces/
-stage_2_timing/waveforms/
-stage_2_timing/cocotb/
-stage_3_codegen/rtl/
-stage_3_codegen/tb_autogen/
-stage_4_sim/tb/
-stage_4_sim/sim_output/
-stage_4_sim/cocotb_regression/
-stage_5_synth/
-.veriflow/stage_completed/
-.veriflow/approvals/
-.veriflow/logs/
-reports/
-```
+**Question**: "Confirm project configuration"
 
-### 4. Detect Toolchain
+Settings to display:
+- **Mode**: [selected mode]
+- **Validation Level**: [minimal/standard/strict]
+- **Testbench Depth**: [minimal/standard/thorough]
+- **Features**: [list enabled features like cocotb, timing contracts, etc.]
 
-Detect toolchain versions:
-- `iverilog -V` (add C:\oss-cad-suite\bin and C:\oss-cad-suite\lib to PATH if on Windows)
-- `yosys -V`
+**Options**:
+- Accept and proceed
+- Go back to change mode
 
-### 5. Create Project Config
+### 3. Create Project Configuration
 
-Create `.veriflow/project_config.json` with:
+Create `.veriflow/project_config.json`:
 
 ```json
 {
-  "project": "<design_name_from_requirements>",
+  "project": "{{PROJECT_NAME}}",
+  "version": "8.2.0",
+  "mode": "[selected_mode]",
+  "target_frequency_mhz": 300,
   "vendor": "generic",
-  "target_frequency_mhz": <from_requirements_default_300>,
-  "execution_mode": "<user_selected_mode: automatic|parameterized>",
-  "confirm_after_validate": <true_if_user_wants_confirm_false_otherwise>,
-  "auto_approve": {
-    "module_partition": <true_for_automatic_false_for_parameterized>,
-    "interface_def": <true_for_automatic_false_for_parameterized>,
-    "code_style": <true_for_automatic_false_for_parameterized>
+  "created_at": "[ISO8601 timestamp]",
+  "toolchain": {
+    "iverilog": "[version]",
+    "yosys": "[version]"
   },
-  "toolchain": <detected_toolchain_versions>,
+  "features": {
+    "cocotb": [true/false],
+    "timing_contracts": [true/false],
+    "requirements_matrix": [true/false],
+    "uvm_like_lib": [true/false],
+    "synthesis": [true/false]
+  },
+  "validation_level": "[minimal/standard/strict]",
+  "testbench_depth": "[minimal/standard/thorough]",
+  "confirm_after_validate": false,
   "coding_style": {
     "reset_type": "async_active_low",
     "reset_signal": "rst_n",
@@ -83,26 +69,63 @@ Create `.veriflow/project_config.json` with:
     "naming": "snake_case",
     "port_style": "ANSI",
     "indent": 4
-  },
-  "user_preferences": {
-    "preferred_coding_style": "generic",
-    "include_comments": true,
-    "include_assertions": true
   }
 }
 ```
 
-### 6. Read Requirements and Summarize
+### 4. Create Directory Structure
 
-Read requirement.md and summarize key design parameters.
+Create directories based on selected mode:
 
-## Constraints
-- Do NOT create any .v files
-- Do NOT start any design work before mode selection
-- Only create directories and config files
-- MUST ask user for mode selection first using AskUserQuestion
+**Common (all modes)**:
+- `stage_1_spec/specs/`
+- `stage_1_spec/docs/`
+- `stage_3_codegen/rtl/`
+- `stage_3_codegen/tb_autogen/`
+- `stage_4_sim/tb/`
+- `stage_4_sim/sim_output/`
+- `.veriflow/stage_completed/`
+- `reports/`
+
+**Standard/Enterprise only**:
+- `stage_2_timing/scenarios/`
+- `stage_2_timing/golden_traces/`
+- `stage_2_timing/cocotb/`
+- `stage_5_synth/`
+
+### 5. Check requirement.md
+
+Verify that `requirement.md` exists in the project directory. If not, warn the user:
+
+```
+⚠️  Warning: requirement.md not found in project directory.
+   Please create requirement.md before proceeding to Stage 1.
+```
 
 ## Output
-Print a summary of what was created, the detected toolchain versions, and the selected execution mode.
+
+Print summary:
+```
+================================================================
+  Stage 0: Project Initialization - COMPLETE
+================================================================
+
+Configuration:
+  Mode: [selected_mode]
+  Project: [project_name]
+  Target Frequency: 300 MHz
+
+Directories Created:
+  [list of created directories]
+
+Features Enabled:
+  [list of enabled features]
+
+Next Steps:
+  1. Review requirement.md
+  2. Run: python veriflow_ctl.py next -d [project_dir]
+
+================================================================
+```
 
 {{EXTRA_CONTEXT}}

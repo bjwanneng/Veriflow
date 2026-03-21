@@ -146,13 +146,35 @@ endmodule
 `resetall
 ```
 
-### 3. Generate Automatic Testbench (NEW)
+### 3. Generate Automatic Testbench (Requirement-Driven)
+
+**Pre-flight**: Read `.veriflow/project_config.json` and extract `testbench_depth` ("minimal" | "standard" | "thorough"). Also read `stage_1_spec/specs/structured_requirements.json` to understand what each module must verify.
+
+Testbench depth controls test data volume:
+| Depth | Unit TB vectors | Integration TB vectors | Description |
+|-------|----------------|----------------------|-------------|
+| minimal | 3-5 per module | 5-10 | Smoke tests only |
+| standard | 10-20 per module | 50+ total | Boundary values + KAT vectors |
+| thorough | 50+ per module | 200+ total | Exhaustive + random patterns |
 
 Generate testbench for each module in `stage_3_codegen/tb_autogen/`:
 
 #### 3.1 Generate Unit Testbench for Each Non-Top Module
 
-Create `tb_<module_name>.v` with the following structure:
+Create `tb_<module_name>.v` with the following requirements:
+
+**Test vector selection** — For each module, derive test vectors from:
+1. `structured_requirements.json`: find requirements that map to this module and create vectors that exercise them
+2. Standard known-answer test (KAT) vectors from the design domain (e.g., NIST vectors for crypto, RFC vectors for protocols)
+3. Boundary values: zero, all-ones, alternating bits (0xAA/0x55), max values
+4. Edge cases specific to the module's function
+
+**Minimum vector counts** (per `testbench_depth`):
+- `minimal`: 3-5 directed vectors
+- `standard`: 10-20 directed vectors including all boundary values and at least 2 KAT vectors
+- `thorough`: 50+ vectors including KAT, boundary, and `$random`-based patterns
+
+**Template structure**:
 
 ```verilog
 `resetall
@@ -161,13 +183,17 @@ Create `tb_<module_name>.v` with the following structure:
 
 module tb_module_name;
 
+    // Error tracking
+    integer pass_count = 0;
+    integer fail_count = 0;
+    integer test_num = 0;
+
     reg clk;
     reg rst_n;
 
     // DUT signal declarations
     reg [7:0] i_byte;
     wire [7:0] o_byte;
-    // ... other signals
 
     // DUT instantiation
     module_name dut (
@@ -175,13 +201,12 @@ module tb_module_name;
         .rst_n(rst_n),
         .i_byte(i_byte),
         .o_byte(o_byte)
-        // ... other ports
     );
 
-    // Clock generation (300MHz = 3.33ns period)
+    // Clock generation
     initial begin
         clk = 0;
-        forever #1.665 clk = ~clk;
+        forever #5 clk = ~clk;
     end
 
     // VCD dump
@@ -190,57 +215,73 @@ module tb_module_name;
         $dumpvars(0, tb_module_name);
     end
 
+    // Helper task for checking results
+    task check_result;
+        input [7:0] expected;
+        input [255:0] test_desc;  // string description
+        begin
+            test_num = test_num + 1;
+            if (o_byte === expected) begin
+                pass_count = pass_count + 1;
+                $display("[PASS] Test %0d: %0s | Input=%h Expected=%h Got=%h",
+                         test_num, test_desc, i_byte, expected, o_byte);
+            end else begin
+                fail_count = fail_count + 1;
+                $display("[FAIL] Test %0d: %0s | Input=%h Expected=%h Got=%h",
+                         test_num, test_desc, i_byte, expected, o_byte);
+            end
+        end
+    endtask
+
     // Test sequence
     initial begin
         $display("========================================");
         $display("  Testbench for module_name");
+        $display("  Depth: <testbench_depth>");
         $display("========================================");
 
         // Reset
         rst_n = 0;
         i_byte = 8'h00;
-        // Initialize other inputs...
-
         repeat(10) @(posedge clk);
         rst_n = 1;
         repeat(5) @(posedge clk);
-
         $display("[INFO] Reset complete");
 
-        // Run tests
-        run_test_basic();
-        run_test_cases();
+        // --- Requirement-driven tests ---
+        // Verifies REQ-FUNC-XXX: <description>
+        run_requirement_tests();
 
+        // --- Boundary value tests ---
+        run_boundary_tests();
+
+        // --- KAT tests (if applicable) ---
+        run_kat_tests();
+
+        // --- Summary ---
         $display("========================================");
-        $display("  ALL TESTS PASSED");
+        $display("  Results: %0d passed, %0d failed out of %0d tests",
+                 pass_count, fail_count, test_num);
+        if (fail_count == 0)
+            $display("  ALL TESTS PASSED");
+        else
+            $display("  SOME TESTS FAILED");
         $display("========================================");
         $finish;
     end
 
     // Watchdog timer
     initial begin
-        #100000;
-        $display("[TIMEOUT] Simulation timed out after 100us");
+        #200000;
+        $display("[TIMEOUT] Simulation timed out after 200us");
+        $display("  Results so far: %0d passed, %0d failed", pass_count, fail_count);
         $finish;
     end
 
-    // Basic functionality test task
-    task run_test_basic;
-        begin
-            $display("[TEST] Basic functionality");
-            // Test code...
-            $display("[PASS] Basic functionality");
-        end
-    endtask
-
-    // Specific test case task
-    task run_test_cases;
-        begin
-            $display("[TEST] Test cases");
-            // Test code...
-            $display("[PASS] Test cases");
-        end
-    endtask
+    // Implement test tasks with actual test vectors...
+    task run_requirement_tests; begin /* ... */ end endtask
+    task run_boundary_tests; begin /* ... */ end endtask
+    task run_kat_tests; begin /* ... */ end endtask
 
 endmodule
 `resetall
@@ -248,11 +289,19 @@ endmodule
 
 #### 3.2 Generate Integration Testbench for Top Module
 
-Create `tb_<design_name>_top.v` including:
-- Standard test vectors from requirements
-- Basic operation tests
-- Continuous data tests
-- Configuration mode tests (if applicable)
+Create `tb_<design_name>_top.v` with requirement-driven testing:
+
+**Test vector selection for integration testbench**:
+1. All standard test vectors from the design requirements (e.g., NIST FIPS-197 for AES, RFC examples)
+2. Single operation with known-answer verification
+3. Back-to-back operations (4+ consecutive)
+4. Mode switching tests (if applicable)
+5. Edge cases from requirements
+
+**Minimum vector counts** (per `testbench_depth`):
+- `minimal`: 5-10 test vectors
+- `standard`: 50+ test vectors including all standard KAT vectors
+- `thorough`: 200+ test vectors including KAT, random, and stress patterns
 
 ```verilog
 `resetall
@@ -261,15 +310,22 @@ Create `tb_<design_name>_top.v` including:
 
 module tb_design_top;
 
-    // Standard test vectors
-    localparam [31:0] TEST_INPUT    = 32'h12345678;
-    localparam [31:0] TEST_EXPECTED  = 32'h87654321;
+    // Error tracking
+    integer pass_count = 0;
+    integer fail_count = 0;
+    integer test_num = 0;
+
+    // Standard test vectors from requirements
+    // e.g., NIST FIPS-197 Appendix B for AES-128:
+    // Key:       2b7e151628aed2a6abf7158809cf4f3c
+    // Plaintext: 3243f6a8885a308d313198a2e0370734
+    // Expected:  3925841d02dc09fbdc118597196a0b32
 
     reg clk;
     reg rst_n;
-    reg [31:0] i_data;
+    reg [127:0] i_data;
     reg i_valid;
-    wire [31:0] o_data;
+    wire [127:0] o_data;
     wire o_valid;
 
     // DUT instantiation
@@ -282,13 +338,13 @@ module tb_design_top;
         .o_valid(o_valid)
     );
 
-    // Clock generation (300MHz)
+    // Clock generation
     initial begin
         clk = 0;
-        forever #1.665 clk = ~clk;
+        forever #5 clk = ~clk;
     end
 
-    // VCD dump
+    // VCD dump with full hierarchy
     initial begin
         $dumpfile("tb_design_top.vcd");
         $dumpvars(0, tb_design_top);
@@ -297,72 +353,72 @@ module tb_design_top;
     // Main test sequence
     initial begin
         $display("========================================");
-        $display("  Design Testbench");
+        $display("  Integration Testbench");
+        $display("  Depth: <testbench_depth>");
         $display("========================================");
 
         // Initialize
         rst_n = 0;
-        i_data = 32'h0;
+        i_data = 0;
         i_valid = 0;
 
         repeat(10) @(posedge clk);
         rst_n = 1;
         repeat(5) @(posedge clk);
-
         $display("[INFO] Reset complete");
 
-        // Run tests
-        test_basic_operation();
+        // --- Standard KAT tests (from requirements) ---
+        // Verifies REQ-FUNC-XXX
+        test_kat_vectors();
+
+        // --- Back-to-back operation ---
         test_back_to_back();
 
+        // --- Mode switching (if applicable) ---
+        test_mode_switch();
+
+        // --- Summary ---
         $display("========================================");
-        $display("  ALL TESTS PASSED");
+        $display("  Results: %0d passed, %0d failed out of %0d tests",
+                 pass_count, fail_count, test_num);
+        if (fail_count == 0)
+            $display("  ALL TESTS PASSED");
+        else
+            $display("  SOME TESTS FAILED");
         $display("========================================");
         $finish;
     end
 
     // Watchdog
     initial begin
-        #100000;
+        #500000;
         $display("[TIMEOUT] Simulation timed out");
+        $display("  Results so far: %0d passed, %0d failed", pass_count, fail_count);
         $finish;
     end
 
-    // Basic operation test
-    task test_basic_operation;
+    // KAT test task — must include actual standard test vectors
+    task test_kat_vectors;
         begin
-            $display("[TEST] Basic Operation");
-            i_data = TEST_INPUT;
-            i_valid = 1;
-
-            @(posedge clk);
-            i_valid = 0;
-
-            // Wait pipeline latency
-            repeat(5) @(posedge clk);
-
-            if (o_valid !== 1) begin
-                $display("[FAIL] o_valid not high");
-                $finish;
-            end
-
-            if (o_data !== TEST_EXPECTED) begin
-                $display("[FAIL] Output mismatch");
-                $display("  Expected: %h", TEST_EXPECTED);
-                $display("  Got:      %h", o_data);
-                $finish;
-            end
-
-            $display("[PASS] Basic Operation");
+            $display("[TEST] KAT Vectors from requirements");
+            // Each vector: drive input, wait for output, compare
+            // $display("[TEST %0d] Input=%h Expected=%h Got=%h %s", ...);
         end
     endtask
 
     // Back-to-back test
     task test_back_to_back;
         begin
-            $display("[TEST] Back-to-back packets");
-            // Test continuous input...
-            $display("[PASS] Back-to-back");
+            $display("[TEST] Back-to-back packets (4+ consecutive)");
+            // Send 4+ data blocks without gaps
+            // Verify all outputs match expected
+        end
+    endtask
+
+    task test_mode_switch;
+        begin
+            $display("[TEST] Mode switching");
+            // Test mode transitions if applicable
         end
     endtask
 
@@ -407,12 +463,17 @@ Save lint results to `stage_3_codegen/reports/lint_report.json`:
 ### 7. Testbench Requirements
 
 Each testbench in `tb_autogen/` must include:
-- **Adequate debug prints**: At least 3 `$display` or `$monitor` statements for debugging
-- **Status prints**: Clear [PASS]/[FAIL] messages for each test
+- **Error tracking**: `pass_count` and `fail_count` integer counters, with final summary print
+- **Per-vector logging**: Each test vector must print input, expected, actual, and PASS/FAIL
+- **Adequate debug prints**: At least 5 `$display` statements for debugging (more for `standard`/`thorough`)
+- **Status prints**: Clear [PASS]/[FAIL] messages for each test, plus final summary with counts
 - **Clock generation**: `always` block with clock toggling
-- **Reset sequence**: Full reset initialization
-- **Watchdog timer**: Prevent simulation hang
+- **Reset sequence**: Full reset initialization using configured reset signal
+- **Watchdog timer**: Prevent simulation hang (200us for unit, 500us for integration)
 - **$finish**: Proper simulation termination
+- **VCD dump**: `$dumpfile` and `$dumpvars(0, ...)` for full signal capture
+- **Requirement traceability**: Comments linking tests to requirement IDs (e.g., `// Verifies REQ-FUNC-001`)
+- **Minimum vector counts**: Must meet the minimum for the configured `testbench_depth`
 
 ### 8. Error Fixing
 

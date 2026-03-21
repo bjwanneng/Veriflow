@@ -1,6 +1,6 @@
 # Stage 2: Virtual Timing Modeling
 
-You are a Verilog RTL design agent. Your task is to create timing scenarios, golden traces, AND Cocotb test files.
+You are a Verilog RTL design agent. Your task is to create timing scenarios, golden traces, AND (if cocotb is enabled) Cocotb test files.
 
 ## Working Directory
 {{PROJECT_DIR}}
@@ -10,6 +10,12 @@ You are a Verilog RTL design agent. Your task is to create timing scenarios, gol
 
 ## Spec JSON
 {{SPEC_JSON}}
+
+## Pre-Flight: Read Project Config
+
+Before starting, read `.veriflow/project_config.json` and extract:
+- `enable_cocotb`: whether to generate cocotb verification library (default: false)
+- `testbench_depth`: "minimal" | "standard" | "thorough" (default: "standard")
 
 ## Tasks
 
@@ -65,7 +71,11 @@ Generate golden trace JSON files in `stage_2_timing/golden_traces/`:
 - For each scenario, create `<scenario_name>_trace.json` containing expected signal values per cycle
 - Include standard test vectors from the design requirements
 
-### 3.5 Generate Requirements Coverage Matrix
+### 3.5 Generate Requirements Coverage Matrix (CONDITIONAL — cocotb only)
+
+**IMPORTANT**: If `enable_cocotb` is `false` in project_config.json, SKIP this task and all of Task 4. Proceed directly to Task 5.
+
+If `enable_cocotb` is `true`:
 
 Read `stage_1_spec/specs/structured_requirements.json` and generate a requirements-to-test traceability matrix at `stage_2_timing/cocotb/requirements_coverage_matrix.json`:
 
@@ -99,7 +109,11 @@ Read `stage_1_spec/specs/structured_requirements.json` and generate a requiremen
 - `status` is initialized to `"not_run"` — it will be updated after simulation in Stage 4
 - `coverage_summary.coverage_pct` = covered / testable * 100
 
-### 4. Generate Cocotb Verification Library (UVM-like Architecture)
+### 4. Generate Cocotb Verification Library (CONDITIONAL — UVM-like Architecture)
+
+**IMPORTANT**: If `enable_cocotb` is `false` in project_config.json, SKIP this entire Task 4. Proceed directly to Task 5.
+
+If `enable_cocotb` is `true`:
 
 Generate a complete UVM-like cocotb verification library in `stage_2_timing/cocotb/` with the following directory structure:
 
@@ -753,6 +767,8 @@ Create WaveDrom format timing diagram HTML or JSON files in `stage_2_timing/wave
 - Include assertions for expected output values
 - Every scenario must have a reset phase first
 - Each boundary condition scenario must verify handshake protocol (ready-valid or stall/flush behavior)
+
+### Cocotb Constraints (only when `enable_cocotb` is true)
 - Cocotb tests must be valid Python
 - Must include standard test vectors in Cocotb tests
 - (Very important) Must include a Python `GoldenModel` class with `tick()` and `reset()` methods that model the pipeline cycle-by-cycle
@@ -768,8 +784,12 @@ Create WaveDrom format timing diagram HTML or JSON files in `stage_2_timing/wave
 - **Every testable requirement from structured_requirements.json must map to at least one cocotb test in the matrix**
 - **Coverpoints must include requirement-derived coverpoints (named with req_id prefix) in addition to baseline data_range and protocol_corner_cases**
 
+### When cocotb is disabled
+- Skip all cocotb-related file generation (Task 3.5 and Task 4)
+- Do NOT create `stage_2_timing/cocotb/` directory
+
 ## Output
-Print: number of scenarios created, golden traces generated, Cocotb test files created, verification library files created, and test vectors included.
+Print: number of scenarios created, golden traces generated. If cocotb enabled: Cocotb test files created, verification library files created, and test vectors included. If cocotb disabled: state that cocotb was skipped per project config.
 
 ### After Validation: Confirm to Proceed
 

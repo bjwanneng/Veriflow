@@ -4,94 +4,172 @@ description: Industrial-grade Verilog design pipeline with script-controlled orc
 license: MIT
 metadata:
   author: VeriFlow Team
-  version: "8.1.0"
+  version: "8.2.0"
   category: hardware-design
 ---
 
-# VeriFlow-Agent 8.1 — Gate-Controlled Pipeline
+# VeriFlow-Agent 8.2 — 多模式设计流程
 
-Architecture: **Script as gatekeeper, LLM as executor.**
-- `veriflow_ctl.py` enforces stage ordering, prerequisites, and validation gates
-- You (Claude Code) drive the flow and execute each stage's creative tasks
-- You cannot skip stages or mark incomplete work as done — the script prevents it
+架构: **脚本做门控，LLM做执行**
 
-## Pipeline Stages
+---
 
-| Stage | Name | Key Output |
-|-------|------|------------|
-| 0 | Project Initialization | Directory structure, project_config.json |
-| 1 | Micro-Architecture Spec | `stage_1_spec/specs/*_spec.json` |
-| 2 | Virtual Timing Modeling | YAML scenarios, golden traces, Cocotb tests |
-| 3 | RTL Code Generation + Lint | `stage_3_codegen/rtl/*.v`, testbenches |
-| 4 | Simulation & Verification | Testbenches, sim logs (all PASS) |
-| 5 | Synthesis Analysis | Yosys synthesis, synth_report.json |
-| 6 | Closing | `reports/final_report.md` |
+## 快速开始
 
-## EXECUTION PROTOCOL
-
-**You MUST follow this exact loop. Do NOT deviate.**
-
-The controller script path is relative to this skill's directory:
-```
-CTL="<SKILL_DIR>/veriflow_ctl.py"
-```
-Where `<SKILL_DIR>` is the directory containing this SKILL.md file. Resolve it to an absolute path before use. For example, if this skill is installed at `~/.claude/skills/verilog-flow-skill/`, then:
 ```bash
-CTL="$HOME/.claude/skills/verilog-flow-skill/veriflow_ctl.py"
+# 1. 确保项目目录有 requirement.md
+# 2. 启动流程
+python veriflow_ctl.py next -d ./my_project
 ```
 
-### Loop: repeat until all stages complete
+---
 
-**Step 1 — Get next stage prompt**
+## 三种执行模式
+
+| 模式 | 阶段 | 适用场景 | 验证深度 |
+|------|------|----------|----------|
+| **Quick** | 0→1→3→4→6 | 简单模块、原型验证、快速迭代 | 最小验证 |
+| **Standard** | 0→1→2→3→4→5→6 | 一般项目、推荐默认 | 完整验证 |
+| **Enterprise** | 0→1→1.5→2→3→3.5→4→5→6 | 关键项目、工业级 | 严格验证 |
+
+### 模式选择指南
+
+- **Quick 模式**: 计数器、简单状态机、小FIFO、学习/原型
+- **Standard 模式**: 接口控制器、算法模块、一般IP核
+- **Enterprise 模式**: 复杂SoC、关键路径、需要严格质量门控
+
+---
+
+## 执行协议 (简化版)
+
+```
+循环执行直到所有阶段完成:
+
+  步骤1: 获取Prompt
+    └─▶ python veriflow_ctl.py next -d $PROJECT_DIR
+
+  步骤2: 执行任务
+    └─▶ 读取Prompt，完成所有子任务
+
+  步骤3: 验证
+    └─▶ python veriflow_ctl.py validate -d $PROJECT_DIR $STAGE
+
+  步骤4: 标记完成
+    └─▶ python veriflow_ctl.py complete -d $PROJECT_DIR $STAGE
+```
+
+### 重要规则
+
+1. **不要跳过验证** - 必须通过 validate 才能 complete
+2. **不要手动创建标记文件** - 只使用 complete 命令
+3. **一次一个阶段** - 完成当前阶段才能开始下一个
+
+---
+
+## 各阶段说明
+
+| 阶段 | 名称 | 输出 | Quick | Standard | Enterprise |
+|------|------|------|-------|----------|------------|
+| 0 | 项目初始化 | 目录结构、配置 | ✅ | ✅ | ✅ |
+| 1 | 微架构规格 | spec.json | ✅(简化) | ✅ | ✅(含评审) |
+| 1.5 | 架构评审 | 评审报告 | ❌ | ❌ | ✅ |
+| 2 | 虚拟时序建模 | YAML、Golden Trace | ❌ | ✅ | ✅ |
+| 3 | RTL代码生成 | .v 文件、testbench | ✅ | ✅ | ✅(含评审) |
+| 3.5 | 代码评审 | 评审报告 | ❌ | ❌ | ✅ |
+| 4 | 仿真验证 | 仿真日志、波形 | ✅(简化) | ✅ | ✅ |
+| 5 | 综合分析 | 综合报告 | ❌ | ✅ | ✅ |
+| 6 | 项目收尾 | 最终报告 | ✅ | ✅ | ✅ |
+
+---
+
+## Prompt 设计
+
+### 分层 Prompt 架构
+
+```
+┌─────────────────────────────────────┐
+│  Core Prompt (核心, 200 tokens)     │
+│  - 任务一句话描述                     │
+│  - 输入/输出格式                      │
+│  - 3-5条关键约束                      │
+├─────────────────────────────────────┤
+│  Context (上下文, 按需加载)          │
+│  - 编码风格 (Quick模式可不加载)       │
+│  - 设计规格                           │
+├─────────────────────────────────────┤
+│  Examples (示例, 可选)               │
+│  - 复杂任务提供示例                   │
+└─────────────────────────────────────┘
+```
+
+### 模式对应的 Prompt 长度
+
+| 模式 | 目标长度 | 示例数量 | 模板数量 |
+|------|----------|----------|----------|
+| Quick | < 2000 tokens | 0 | 0 |
+| Standard | 2000-4000 tokens | 1-2 | 核心模板 |
+| Enterprise | 4000-8000 tokens | 2-3 | 完整模板+最佳实践 |
+
+---
+
+## 工具命令参考
+
 ```bash
-python "$CTL" next -d "PROJECT_DIR"
-```
-- If output starts with `BLOCKED:` → a prerequisite stage is incomplete. Fix it first.
-- If output starts with `ALL_STAGES_COMPLETE` → pipeline is done. Stop.
-- Otherwise, the output contains `---BEGIN_PROMPT---` ... `---END_PROMPT---` with the full task instructions.
+# 查看项目状态
+python veriflow_ctl.py status -d ./my_project
 
-**Step 2 — Execute the tasks**
-Read the prompt output from Step 1 and execute ALL tasks described in it. This is where you do the real work: generate specs, write Verilog, create testbenches, run simulations, etc.
+# 获取下一阶段Prompt
+python veriflow_ctl.py next -d ./my_project
 
-**Step 3 — Validate**
-```bash
-python "$CTL" validate -d "PROJECT_DIR" STAGE_NUMBER
-```
-- If `VALIDATION_PASSED` → proceed to Step 4.
-- If `VALIDATION_FAILED` → read the errors, fix them, then re-run validate. Do NOT proceed until validation passes.
+# 验证阶段输出
+python veriflow_ctl.py validate -d ./my_project 3
 
-**Step 4 — Mark complete**
-```bash
-python "$CTL" complete -d "PROJECT_DIR" STAGE_NUMBER
-```
-- If `STAGE_COMPLETE` → go back to Step 1 for the next stage.
-- If `REFUSED` → validation failed internally. Fix errors and retry.
+# 标记阶段完成
+python veriflow_ctl.py complete -d ./my_project 3
 
-**Step 5 — (If needed) Ask user before proceeding to next stage**
-Check `.veriflow/project_config.json` `confirm_after_validate`. If true (or field missing), use AskUserQuestion to confirm with the user before moving to the next stage. Show them a brief summary of what was accomplished.
+# 回滚到指定阶段
+python veriflow_ctl.py rollback -d ./my_project 1
 
-### Rollback (when stuck)
-If a stage repeatedly fails and the root cause is in an earlier stage:
-```bash
-python "$CTL" rollback -d "PROJECT_DIR" TARGET_STAGE
-```
-This clears all completion markers after TARGET_STAGE. Then resume the loop from Step 1.
-
-### Check progress anytime
-```bash
-python "$CTL" status -d "PROJECT_DIR"
+# 查看阶段详情
+python veriflow_ctl.py info -d ./my_project 2
 ```
 
-## IMPORTANT RULES
+---
 
-1. **Always use the controller** — never manually create `.veriflow/stage_completed/` marker files
-2. **Never skip validation** — always run `validate` before `complete`
-3. **Fix errors in-place** — if validation fails, fix the files and re-validate; do not move on
-4. **One stage at a time** — the controller enforces sequential execution
-5. **requirement.md** — the project directory must contain a `requirement.md` file describing the design
-6. **EDA toolchain PATH** — the controller auto-detects tool paths across platforms. If tools are not found, add them manually:
-   - Windows: `export PATH="/c/oss-cad-suite/bin:/c/oss-cad-suite/lib:$PATH"`
-   - macOS: `export PATH="/opt/homebrew/bin:$PATH"`
-   - Linux: `export PATH="/opt/oss-cad-suite/bin:$PATH"`
-7. **Cross-platform shell commands** — avoid `| tee`, `| head`, `timeout` (not available on all platforms). Use file redirection (`> file.log 2>&1`) instead. Testbench watchdog timers handle simulation timeouts.
-8. **Coding style from project config** — always read `.veriflow/project_config.json` `coding_style` for reset type/signal, naming conventions, etc. Do not hardcode `rst_n` or assume async active-low reset.
+## 项目配置示例
+
+```json
+{
+  "project": "my_design",
+  "mode": "quick",
+  "target_frequency_mhz": 300,
+  "testbench_depth": "minimal",
+  "features": {
+    "cocotb": false,
+    "timing_contracts": false,
+    "requirements_matrix": false
+  },
+  "validation_level": "minimal",
+  "confirm_after_validate": false,
+  "coding_style": {
+    "reset_type": "async_active_low",
+    "reset_signal": "rst_n"
+  }
+}
+```
+
+---
+
+## 更新日志
+
+### v8.2.0 (2026-03-21)
+- 引入三种执行模式：Quick / Standard / Enterprise
+- 简化执行协议，减少强制步骤
+- 分层Prompt设计，按模式动态加载
+- 按需验证级别，避免过度验证
+- 优化项目配置结构
+
+---
+
+**文档版本**: 8.2.0
+**兼容控制器版本**: >= 8.2.0
