@@ -26,6 +26,28 @@ Claude Code (LLM)          veriflow_ctl.py (Script)
 
 The LLM handles creative work (writing Verilog, designing architecture, debugging). The script handles hard pass/fail decisions. The LLM cannot skip stages or bypass validation.
 
+## Three Execution Modes (v8.2 New Feature)
+
+| Mode | Stages | Use Case | Validation Level | Typical Time |
+|------|--------|----------|------------------|--------------|
+| **Quick** | 0→1→3→4→6 (5 stages) | Simple modules, prototyping, fast iteration | Minimal | 30-60 minutes |
+| **Standard** | 0→1→2→3→4→5→6 (7 stages) | Most projects, recommended default | Standard | 2-4 hours |
+| **Enterprise** | 7+ stages with sub-stages | Critical projects, industrial quality | Strict | 1-2 days |
+
+### Stage Flow Comparison
+
+| Stage | Quick | Standard | Enterprise | Description |
+|-------|-------|----------|------------|-------------|
+| 0 | ✅ | ✅ | ✅ | Project Initialization |
+| 1 | ✅(simplified) | ✅ | ✅(with review) | Architecture Spec |
+| 1.5 | ❌ | ❌ | ✅ | Architecture Review |
+| 2 | ❌ | ✅ | ✅ | Virtual Timing Modeling |
+| 3 | ✅ | ✅ | ✅(with review) | RTL Code Generation |
+| 3.5 | ❌ | ❌ | ✅ | Code Review & Optimization |
+| 4 | ✅(simplified) | ✅ | ✅ | Simulation Verification |
+| 5 | ❌ | ✅ | ✅ | Synthesis Analysis |
+| 6 | ✅ | ✅ | ✅ | Project Closing |
+
 ## 7-Stage Pipeline
 
 | Stage | Name | Key Output |
@@ -39,6 +61,22 @@ The LLM handles creative work (writing Verilog, designing architecture, debuggin
 | 6 | Closing | `reports/final_report.md` |
 
 ## What's New in v8.2
+
+### Multi-Mode Architecture (v8.2.0)
+
+**Three Execution Modes**:
+- **Quick Mode**: 5 stages (0→1→3→4→6), skips timing modeling and synthesis, ideal for fast prototyping
+- **Standard Mode**: 7 complete stages, recommended default
+- **Enterprise Mode**: with sub-stages (1.5 architecture review, 3.5 code review), strict validation
+
+**Mode-Aware Validation**:
+- Minimal: Basic file existence and compilation checks
+- Standard: Full quality gates (spec validity, lint, simulation)
+- Strict: Enterprise gates (reviews, formal checks, coverage)
+
+**New Commands**:
+- `veriflow_ctl.py init` - Interactive project initialization with mode selection
+- `veriflow_ctl.py mode` - Get or set current mode
 
 ### Requirements-Driven Verification — Traceability + Coverage Matrix
 
@@ -137,6 +175,15 @@ export PATH="/opt/oss-cad-suite/bin:$PATH"
 ```bash
 CTL="~/.claude/skills/verilog-flow-skill/veriflow_ctl.py"
 
+# Initialize new project (interactive wizard with mode selection)
+python "$CTL" init -d ./my_project
+
+# View/switch execution mode
+python "$CTL" mode -d ./my_project              # View current mode
+python "$CTL" mode -d ./my_project quick        # Switch to Quick mode
+python "$CTL" mode -d ./my_project standard     # Switch to Standard mode
+python "$CTL" mode -d ./my_project enterprise   # Switch to Enterprise mode
+
 # Check progress
 python "$CTL" status -d ./my_project
 
@@ -188,10 +235,13 @@ verilog-flow-skill/
 ├── SKILL.md                          # Claude Code skill entry point
 ├── README.md                         # Chinese documentation
 ├── README_EN.md                      # English documentation
+├── CHANGELOG.md                      # Changelog
+├── readme_first.md                   # Project status memo
 ├── veriflow_ctl.py                   # Gate controller v8.2 (cross-platform)
 ├── prompts/                          # Task prompts for each stage
 │   ├── stage0_init.md
 │   ├── stage1_spec.md
+│   ├── stage1_spec_quick.md         # Quick mode simplified version
 │   ├── stage2_timing.md
 │   ├── stage3_codegen.md
 │   ├── stage4_sim.md
@@ -201,11 +251,10 @@ verilog-flow-skill/
     ├── common/
     │   ├── kpi.py                    # KPI tracking (Pass@1, timing convergence)
     │   └── experience_db.py          # Experience DB (failure case recording & retrieval)
-    ├── defaults/
-    │   ├── coding_style/             # generic / xilinx / intel coding standards
-    │   └── templates/                # Reusable Verilog templates
-    └── stage1/schemas/
-        └── arch_spec_v2.json         # Architecture spec JSON Schema
+    └── defaults/
+        ├── coding_style/             # generic / xilinx / intel coding standards
+        ├── templates/                # Reusable Verilog templates
+        └── project_templates.json    # Three mode configuration templates
 ```
 
 ## Project Directory Structure (Generated at Runtime)
