@@ -39,7 +39,9 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-SKILL_DIR = Path(__file__).parent
+# Get the directory where this script is located (skill directory)
+# This allows running the script from any directory
+SKILL_DIR = Path(__file__).resolve().parent
 PROMPTS_DIR = SKILL_DIR / "prompts"
 
 sys.path.insert(0, str(SKILL_DIR / "verilog_flow"))

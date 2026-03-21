@@ -73,7 +73,17 @@ Create `.veriflow/project_config.json`:
 }
 ```
 
-### 4. Create Directory Structure
+### 4. Copy veriflow_ctl.py to Project Directory
+
+**CRITICAL**: Copy the veriflow_ctl.py script from the skill directory to the project directory so it can be run easily.
+
+First, find the skill directory (where this prompt is located), then copy:
+```bash
+# From the skill directory, copy to project
+cp veriflow_ctl.py "{{PROJECT_DIR}}/"
+```
+
+### 5. Create Directory Structure
 
 Create directories based on selected mode:
 
