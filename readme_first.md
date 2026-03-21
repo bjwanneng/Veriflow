@@ -4,86 +4,115 @@
 
 ## 项目概述
 
-VeriFlow 是一个工业级 Verilog 设计流水线工具，采用"脚本做门控，LLM 做执行"的架构。核心控制器 `veriflow_ctl.py` 管理 7 个阶段（Stage 0-6）的顺序执行、验证和完成标记。
+VeriFlow 是一个工业级 Verilog 设计流水线工具，采用"脚本做门控，LLM 做执行"的架构。核心控制器 `veriflow_ctl.py` 管理多阶段（Stage）的顺序执行、验证和完成标记。
 
-### 阶段流程
+### v8.2.0 重大更新：多模式架构
 
-| Stage | 名称 | Prompt 文件 |
-|-------|------|-------------|
-| 0 | Project Initialization | stage0_init.md |
-| 1 | Micro-Architecture Specification | stage1_spec.md |
-| 2 | Virtual Timing Modeling | stage2_timing.md |
-| 3 | RTL Code Generation + Lint | stage3_codegen.md |
-| 4 | Simulation & Verification | stage4_sim.md |
-| 5 | Synthesis Analysis | stage5_synth.md |
-| 6 | Closing | stage6_close.md |
+从 v8.2.0 开始，VeriFlow 支持三种执行模式，适应不同项目需求：
 
-### 关键文件
+| 模式 | 阶段 | 适用场景 | 验证级别 |
+|------|------|----------|----------|
+| **Quick** | 0→1→3→4→6 (5阶段) | 简单模块、原型验证、快速迭代 | Minimal |
+| **Standard** | 0→1→2→3→4→5→6 (7阶段) | 一般项目、推荐默认 | Standard |
+| **Enterprise** | 7+阶段含子阶段 | 关键项目、工业级质量 | Strict |
 
-- `veriflow_ctl.py` — 主控制器，包含阶段验证、prompt 构建、摘要生成
-- `prompts/` — 各阶段的 prompt 模板
-- `SKILL.md` — Claude Code skill 入口定义
+### 阶段流程对比
+
+| Stage | Quick | Standard | Enterprise | 说明 |
+|-------|-------|----------|------------|------|
+| 0 | ✅ | ✅ | ✅ | 项目初始化 |
+| 1 | ✅(简化) | ✅ | ✅(含评审) | 架构规格 |
+| 1.5 | ❌ | ❌ | ✅ | 架构评审 |
+| 2 | ❌ | ✅ | ✅ | 虚拟时序建模 |
+| 3 | ✅ | ✅ | ✅(含评审) | RTL代码生成 |
+| 3.5 | ❌ | ❌ | ✅ | 代码评审与优化 |
+| 4 | ✅(简化) | ✅ | ✅ | 仿真验证 |
+| 5 | ❌ | ✅ | ✅ | 综合分析 |
+| 6 | ✅ | ✅ | ✅ | 项目收尾 |
+
+### 核心文件
+
+- `veriflow_ctl.py` — 主控制器，v8.2.0 重写支持多模式
+- `verilog_flow/defaults/project_templates.json` — 三种模式的完整配置模板
+- `SKILL.md` — Claude Code skill 入口，v8.2.0 简化 60%
+- `prompts/` — 各阶段的 prompt 模板，新增 `stage1_spec_quick.md`
 
 ---
 
 ## 最近改动记录
 
-### 2026-03-19: 需求驱动验证 — 需求追溯 + 覆盖率矩阵 (commit 43697fc)
+### 2026-03-21: v8.2.0 多模式架构优化
 
-**问题**: 仿真测试没有系统性追溯到需求文档。requirement.md 只在 Stage 0/1 被读取，之后丢失。cocotb 测试用例是通用的，没有从需求中提取具体功能点。
+**问题**: 原流程对简单项目过重，7个Stage全部走一遍不适合快速原型验证；Prompt过于冗长，token消耗大；SKILL.md执行协议过于繁琐。
 
 **改动**:
 
-1. **stage1_spec.md** — 新增 Task 0（在原 Task 1 之前）
-   - 0.1 需求清晰度检查：评估 requirement.md 完整性，模糊时用 AskUserQuestion 要求用户修订
-   - 0.2 生成 `structured_requirements.json`：每条需求有 req_id（REQ-{FUNC|PERF|IF|CONS}-NNN）、category、description、testable、acceptance_criteria、derived_tests
-   - 约束：requirements 非空、至少 1 个 functional、testable 需求必须有 acceptance_criteria
+1. **引入三种执行模式**
+   - Quick模式：5个阶段（0→1→3→4→6），跳过Stage 2时序建模和Stage 5综合
+   - Standard模式：7个阶段，推荐默认
+   - Enterprise模式：含子阶段（1.5架构评审、3.5代码评审），严格验证
 
-2. **stage2_timing.md** — 需求追溯覆盖矩阵
-   - 顶部新增 `{{REQUIREMENT}}` 占位符，Stage 2 也能读到原始需求
-   - 新增 Section 3.5：从 structured_requirements.json 生成 `requirements_coverage_matrix.json`
-   - CoverageCollector 新增需求派生 coverpoint（功能→功能覆盖点，性能→性能指标覆盖点，接口→协议覆盖点）
-   - test_integration.py 新增需求覆盖追踪，测试后更新 matrix 中各需求 status
+2. **重写 veriflow_ctl.py**
+   - 新增 `MODE_CONFIG` 配置三种模式
+   - 新增 `VALIDATION_RULES` 按级别定义验证规则（minimal/standard/strict）
+   - 新增 `init` 命令用于项目初始化
+   - 新增 `mode` 命令用于查看/切换模式
+   - `validate` 和 `complete` 现在根据当前模式使用对应的验证规则
 
-3. **stage4_sim.md** — 需求覆盖率报告
-   - 新增 Part E Step 16：生成 `requirements_coverage_report.json`
-   - 汇总所有需求验证状态（verified/failed/not_run），按类别统计覆盖率
+3. **新增 project_templates.json**
+   - 定义三种模式的完整配置
+   - 包括 stages、validation_level、features、prompt_style、testbench_depth
 
-4. **veriflow_ctl.py** — 验证器和摘要增强
-   - `build_prompt()`: `stage_id <= 1` → `stage_id <= 2`，requirement.md 注入到 Stage 2
-   - `_validate_stage1()`: 检查 structured_requirements.json 存在、JSON 有效、requirements 非空、字段完整、至少 1 个 functional、testable 有 acceptance_criteria
-   - `_validate_stage2()`: 检查 requirements_coverage_matrix.json 存在、JSON 有效、matrix 非空、每项有 req_id + cocotb_tests 非空、coverage_pct > 0
-   - `_validate_stage4()`: 检查 requirements_coverage_report.json 存在、JSON 有效、requirements_coverage_pct > 0
-   - `_generate_stage1_details`: 增加需求摘要（总数、各类别、可测试数）
-   - `_generate_stage2_details`: 增加覆盖矩阵摘要（覆盖率%、已覆盖/未覆盖数）
-   - `_generate_stage4_details`: 增加需求覆盖率报告摘要（各类别验证率）
+4. **简化 SKILL.md**
+   - 执行协议从冗长描述简化为清晰的4步循环
+   - 新增模式选择指南
+   - 移除强制"大声说出"步骤
 
-### 之前: Timing Contract Chain (commit f0878c3)
+5. **新增 Quick 模式专用 Prompt**
+   - `stage1_spec_quick.md`：精简版Stage 1 Prompt，约2000 tokens
 
-引入全链路时序质量改进，Stage 1 spec 中增加 timing_contracts、cycle_behavior_tables、pipeline_stages_detail 等字段，Stage 3 RTL 要求 TIMING CONTRACT / TIMING SELF-CHECK 注释块和 per-cycle 注解。
+6. **新增 CHANGELOG.md**
+   - 记录 v8.0-v8.2 的主要变更
+
+**数据流**: （与 v8.1 保持不变）
+```
+requirement.md
+    ↓ (Stage 1)
+structured_requirements.json
+    ↓ (Stage 2)
+requirements_coverage_matrix.json
+    ↓ (Stage 4)
+requirements_coverage_report.json
+```
 
 ---
 
 ## 设计决策记录
 
-### Coding Style / Template 注入：全量注入，暂不做 RAG（2026-03-19）
+### v8.2 多模式架构设计决策
 
-**现状**: `build_prompt()` 按 vendor 分层加载 coding style（~1300 行）和 template（~1500 行），全量注入到 prompt 的 `{{CODING_STYLE}}` 和 `{{TEMPLATES}}` 占位符。优先级：generic base → vendor-specific → project_config overrides。
+**决策**: 引入 Quick/Standard/Enterprise 三种执行模式
 
-**结论**: 当前规模（4 个 style 文件 + 11 个模板，共 ~120KB）全量注入完全在 context window 承受范围内，不需要 RAG。
+**理由**:
+- 简单项目（如FIFO、计数器）走完整7阶段过于沉重
+- 快速原型验证需要最小化开销
+- 复杂项目仍需要完整的工业级流程
 
-**何时重新评估**: 模板库膨胀到 50+ 个，或多厂商各自 20+ 条规则，或支持用户自定义规范上传时。届时优先考虑 tag-based metadata 过滤（给模板加 tags/protocol 字段，按 spec 关键词匹配），而非 embedding + vector DB。
+**权衡**:
+- Quick模式减少验证环节，可能降低质量保障
+- 提供模式切换功能，项目可以随时升级
+
+**相关文件**:
+- `verilog_flow/defaults/project_templates.json` - 模式配置
+- `veriflow_ctl.py` - 模式感知验证
+- `prompts/stage1_spec_quick.md` - Quick模式专用Prompt
 
 ---
 
-## 数据流关系图
+## 待办事项
 
-```
-requirement.md
-    ↓ (Stage 1)
-structured_requirements.json    ←── 需求结构化
-    ↓ (Stage 2)
-requirements_coverage_matrix.json  ←── 需求→测试映射
-    ↓ (Stage 4)
-requirements_coverage_report.json  ←── 验证结果汇总
-```
+- [ ] 添加更多 Quick 模式专用 Prompt（Stage 3、4 的简化版）
+- [ ] 为 Enterprise 模式添加子阶段支持（1.5、3.5）
+- [ ] 添加模式切换时的数据迁移逻辑
+- [ ] 编写多模式使用示例和教程
+- [ ] 收集用户反馈，优化各模式的验证规则
