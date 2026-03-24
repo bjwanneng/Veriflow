@@ -38,7 +38,7 @@ vvp -V
 - ✅ If you cannot fix it after 3 attempts, tell the user — do NOT fake it
 
 ### RULE 4: NO COCOTB FAKERY EITHER
-- If `enable_cocotb` is true:
+- If `features.cocotb` is true:
   - First check if cocotb is installed: `python -c "import cocotb; print(cocotb.__version__)"`
   - If not installed: STOP and tell user to install it
   - All cocotb logs **MUST** be real output from `make sim`
@@ -57,7 +57,7 @@ You are a Verilog RTL design agent. Your task is to create testbenches, run simu
 ## Pre-Flight: Read Project Config
 
 Before starting, read `.veriflow/project_config.json` and extract:
-- `enable_cocotb`: whether cocotb regression is required (default: false)
+- `features.cocotb` (under `features` in project_config.json): whether cocotb regression is required (default: false)
 - `testbench_depth`: "minimal" | "standard" | "thorough" (default: "standard")
 - `coding_style.reset_signal`: reset signal name
 - `coding_style.reset_type`: reset type
@@ -192,15 +192,15 @@ Test intermittent valid input (bubbles):
 
 ### Part D: Cocotb-Based Regression (CONDITIONAL)
 
-**IMPORTANT**: Read `.veriflow/project_config.json`. If `enable_cocotb` is `false` or not present, SKIP this entire Part D and Part E's cocotb-related fields. Proceed directly to Part E with Verilog-only results.
+**IMPORTANT**: Read `.veriflow/project_config.json`. If `features.cocotb` is `false` or not present (under `features`), SKIP this entire Part D and Part E's cocotb-related fields. Proceed directly to Part E with Verilog-only results.
 
-If `enable_cocotb` is `true`:
+If `features.cocotb` is `true`:
 
 12. **Environment check** — verify cocotb is available:
     ```bash
     python -c "import cocotb; print('cocotb version:', cocotb.__version__)"
     ```
-    If this fails, STOP and report to the user: "cocotb is not installed. Please run `pip install cocotb` or set `enable_cocotb: false` in project_config.json."
+    If this fails, STOP and report to the user: "cocotb is not installed. Please run `pip install cocotb` or set `features.cocotb: false` in project_config.json."
     Do NOT proceed with fake logs.
 
 13. Copy the cocotb verification library from Stage 2:
@@ -300,7 +300,7 @@ Read `structured_requirements.json` and the requirements coverage matrix. For ea
 }
 ```
 
-When `enable_cocotb` is false:
+When `features.cocotb` is false:
 - `cocotb_tests_run` and `cocotb_tests_passed` should be empty arrays
 - Verification status is determined solely by Verilog testbench results
 - A requirement is "verified" if its mapped Verilog testbench tests all PASS
@@ -314,7 +314,7 @@ When `enable_cocotb` is false:
 - **VCD files must have real content**: VCD files should contain all DUT signals (use `$dumpvars(0, dut_instance)` not just top-level), and be >1KB for any non-trivial module
 - **Simulation must complete**: All simulations must run to completion with pass/fail summary
 - **Log authenticity**: ALL `.log` files must be produced by shell command redirection, NEVER by Write/Edit tools
-- **Cocotb conditional**: Part D is ONLY executed when `enable_cocotb` is true in project_config.json
+- **Cocotb conditional**: Part D is ONLY executed when `features.cocotb` is true in project_config.json
 - **If cocotb enabled**: `sim_build/` directory must exist after cocotb runs; logs must contain cocotb signature strings
 - **Must generate `stage_4_sim/requirements_coverage_report.json`**
 

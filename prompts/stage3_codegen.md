@@ -34,9 +34,6 @@ You are a Verilog RTL design agent. Your task is to generate all RTL modules AND
 ## Spec JSON
 {{SPEC_JSON}}
 
-## Provided Architecture Design Specification (Spec JSON)
-{{SPEC_JSON}}
-
 ## Vendor/Generic Coding Style Rules
 {{CODING_STYLE}}
 
