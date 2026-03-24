@@ -80,7 +80,7 @@
         },
         "module_type": {
           "type": "string",
-          "enum": ["processing", "control", "memory", "interface"]
+          "enum": ["top", "processing", "control", "memory", "interface"]
         },
         "ports": {
           "type": "array",

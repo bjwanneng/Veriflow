@@ -335,7 +335,7 @@ def create_ui() -> gr.Blocks:
                 gr.Markdown("**流水线控制**", container=False)
 
                 with gr.Row():
-                    run_btn  = gr.Button("🚀 启动", variant="primary", size="sm", scale=2)
+                    run_btn  = gr.Button("🚀 全部执行", variant="primary", size="sm", scale=2)
                     stop_btn = gr.Button("⏹️ 停止", variant="stop",    size="sm", scale=1, visible=False)
 
                 progress_bar  = gr.Slider(label="进度", minimum=0, maximum=100, value=0, step=1, interactive=False)
@@ -563,6 +563,20 @@ def create_ui() -> gr.Blocks:
                                 pause_btn  = gr.Button("⏸️ 暂停", visible=False)
                                 resume_btn = gr.Button("▶️ 继续", visible=False)
                             eta_display = gr.Textbox(label="预计剩余时间", value="--:--", interactive=False)
+
+                            gr.HTML("<hr style='margin:8px 0'>")
+                            gr.Markdown("### 按阶段执行")
+                            with gr.Row():
+                                stage1_btn  = gr.Button("S1: 架构规格", size="sm", variant="secondary")
+                                stage15_btn = gr.Button("S1.5: 微架构", size="sm", variant="secondary")
+                            with gr.Row():
+                                stage2_btn  = gr.Button("S2: 时序模型", size="sm", variant="secondary")
+                            with gr.Row():
+                                stage3_btn  = gr.Button("S3: RTL生成",  size="sm", variant="secondary")
+                                stage35_btn = gr.Button("S3.5: 静态分析", size="sm", variant="secondary")
+                            with gr.Row():
+                                stage4_btn  = gr.Button("S4: 仿真验证", size="sm", variant="secondary")
+                                stage5_btn  = gr.Button("S5: 综合KPI",  size="sm", variant="secondary")
 
                         with gr.Column(scale=3):
                             gr.Markdown("### 📝 实时日志")
@@ -1061,7 +1075,7 @@ def create_ui() -> gr.Blocks:
         # ======================================================================
         # 运行流水线（Generator 流式）— 逐 stage + Review Gate
         # ======================================================================
-        def run_pipeline_stream(working_dir, project_name, mode, use_mock_val):
+        def run_pipeline_stream(working_dir, project_name, mode, use_mock_val, stage_to_run=None):
             """
             Yields 8 items per update:
               (log_text, stage_label, progress, run_btn, stop_btn,
@@ -1137,18 +1151,28 @@ def create_ui() -> gr.Blocks:
 
             # Stage 进度映射
             stage_progress = {
-                1: {"start": 5,  "done": 30,  "label": "Stage 1: 架构规格"},
-                3: {"start": 35, "done": 65,  "label": "Stage 3: RTL生成"},
-                4: {"start": 70, "done": 90,  "label": "Stage 4: 仿真验证"},
+                1:   {"start": 5,  "done": 20, "label": "Stage 1: 架构规格"},
+                2:   {"start": 20, "done": 38, "label": "Stage 2: 时序模型"},
+                2.5: {"start": 38, "done": 42, "label": "Stage 2.5: 人工审查"},
+                3:   {"start": 42, "done": 65, "label": "Stage 3: RTL生成"},
+                3.5: {"start": 65, "done": 75, "label": "Stage 3.5: 静态分析"},
+                4:   {"start": 75, "done": 90, "label": "Stage 4: 仿真验证"},
+                5:   {"start": 90, "done": 99, "label": "Stage 5: 综合KPI"},
             }
             stage_keywords = {
                 "Executing Stage 1":          (10,  "Stage 1: 架构规格"),
-                "stage 1 complete":           (30,  "Stage 1: 完成"),
+                "stage 1 complete":           (20,  "Stage 1: 完成"),
+                "Executing Stage 2":          (22,  "Stage 2: 时序模型"),
+                "stage 2 complete":           (38,  "Stage 2: 完成"),
                 "Executing Stage 3 Module":   (None, None),   # dynamic
                 "stage 3 module":             (None, None),   # dynamic
                 "stage 3 complete":           (65,  "Stage 3: 完成"),
-                "Executing Stage 4":          (70,  "Stage 4: 仿真验证"),
+                "Executing Stage 3.5":        (66,  "Stage 3.5: 静态分析"),
+                "stage 3.5 complete":         (75,  "Stage 3.5: 完成"),
+                "Executing Stage 4":          (76,  "Stage 4: 仿真验证"),
                 "stage 4 complete":           (90,  "Stage 4: 完成"),
+                "Executing Stage 5":          (91,  "Stage 5: 综合KPI"),
+                "stage 5 complete":           (99,  "Stage 5: 完成"),
                 "PIPELINE COMPLETED":         (100, "✅ 完成"),
                 "PIPELINE FAILED":            (None, "❌ 失败"),
             }
@@ -1161,10 +1185,13 @@ def create_ui() -> gr.Blocks:
             # 确定要执行的 stage 列表
             mode_stages_map = {
                 "quick":      [1, 3, 4],
-                "standard":   [1, 3, 4],
-                "enterprise": [1, 3, 4],
+                "standard":   [1, 2, 3, 3.5, 4],
+                "enterprise": [1, 2, 3, 3.5, 4, 5],
             }
-            all_stages = mode_stages_map.get(mode, [1, 3, 4])
+            if stage_to_run is not None:
+                all_stages = [stage_to_run]
+            else:
+                all_stages = mode_stages_map.get(mode, [1, 3, 4])
 
             ctl_script  = str(get_skill_dir() / "veriflow_ctl.py")
             project_dir = str(project_path)
@@ -1202,11 +1229,15 @@ def create_ui() -> gr.Blocks:
                 if use_mock_val:
                     # Mock mode
                     mock_map = {
-                        1: ["Executing Stage 1", "  Building spec...", "stage 1 complete"],
-                        3: ["Executing Stage 3 Module 1/2: top", "stage 3 module top complete",
-                            "Executing Stage 3 Module 2/2: core", "stage 3 module core complete",
-                            "stage 3 complete"],
-                        4: ["Executing Stage 4", "  Simulation...", "stage 4 complete", "PIPELINE COMPLETED"],
+                        1:   ["Executing Stage 1", "  Building spec...", "stage 1 complete"],
+                        2:   ["Executing Stage 2", "  Generating timing model...", "stage 2 complete"],
+                        2.5: ["Executing Stage 2.5", "  Human review gate...", "stage 2.5 complete"],
+                        3:   ["Executing Stage 3 Module 1/2: top", "stage 3 module top complete",
+                              "Executing Stage 3 Module 2/2: core", "stage 3 module core complete",
+                              "stage 3 complete"],
+                        3.5: ["Executing Stage 3.5", "  Running static analysis...", "stage 3.5 complete"],
+                        4:   ["Executing Stage 4", "  Simulation...", "stage 4 complete", "PIPELINE COMPLETED"],
+                        5:   ["Executing Stage 5", "  Synthesizing...", "stage 5 complete", "PIPELINE COMPLETED"],
                     }
                     for line in mock_map.get(stage_num, []):
                         time.sleep(0.3)
@@ -1339,6 +1370,25 @@ def create_ui() -> gr.Blocks:
             outputs=[log_output, current_stage, progress_bar, run_btn, stop_btn,
                      review_panel, review_preview, modules_checkboxes]
         )
+
+        # ── 单 Stage 执行包装函数 ──────────────────────────────────────────────
+        _stage_outputs = [log_output, current_stage, progress_bar, run_btn, stop_btn,
+                          review_panel, review_preview, modules_checkboxes]
+
+        def _mk_stage_runner(s):
+            def _fn(wd, proj, mode, mock):
+                yield from run_pipeline_stream(wd, proj, mode, mock, stage_to_run=s)
+            return _fn
+
+        _stage_inputs = [working_dir_input, project_dropdown, mode_dropdown, use_mock]
+
+        stage1_btn .click(fn=_mk_stage_runner(1),   inputs=_stage_inputs, outputs=_stage_outputs)
+        stage15_btn.click(fn=_mk_stage_runner(1.5), inputs=_stage_inputs, outputs=_stage_outputs)
+        stage2_btn .click(fn=_mk_stage_runner(2),   inputs=_stage_inputs, outputs=_stage_outputs)
+        stage3_btn .click(fn=_mk_stage_runner(3),   inputs=_stage_inputs, outputs=_stage_outputs)
+        stage35_btn.click(fn=_mk_stage_runner(3.5), inputs=_stage_inputs, outputs=_stage_outputs)
+        stage4_btn .click(fn=_mk_stage_runner(4),   inputs=_stage_inputs, outputs=_stage_outputs)
+        stage5_btn .click(fn=_mk_stage_runner(5),   inputs=_stage_inputs, outputs=_stage_outputs)
 
         # 停止
         def stop_pipeline():

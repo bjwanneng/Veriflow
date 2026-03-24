@@ -1,4 +1,4 @@
-# Stage 35: Skill D — Static Quality Analysis
+# Stage 3.5: Skill D — Static Quality Analysis
 
 ## Role
 You are the **Skill D** static quality analyzer in the VeriFlow pipeline. Your task is to read all RTL files and produce a structured quality report — without running any EDA tools.
@@ -120,7 +120,7 @@ Create `workspace/docs/static_report.json` with this exact schema:
 After generating the report, print a summary:
 
 ```
-=== Stage 35: Skill D Complete ===
+=== Stage 3.5: Skill D Complete ===
 Files analyzed: <count>
 Logic depth: <max_levels>/<budget> (<status>)
 CDC risks (HIGH): <count>

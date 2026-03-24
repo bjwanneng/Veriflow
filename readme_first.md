@@ -1,118 +1,120 @@
 # VeriFlow 项目状态备忘
 
-> 本文件用于跨会话记录项目当前状态和关键改动，方便快速恢复上下文。
-
-## 项目概述
-
-VeriFlow 是一个工业级 Verilog 设计流水线工具，采用"脚本做门控，LLM 做执行"的架构。核心控制器 `veriflow_ctl.py` 管理多阶段（Stage）的顺序执行、验证和完成标记。
-
-### v8.2.0 重大更新：多模式架构
-
-从 v8.2.0 开始，VeriFlow 支持三种执行模式，适应不同项目需求：
-
-| 模式 | 阶段 | 适用场景 | 验证级别 |
-|------|------|----------|----------|
-| **Quick** | 0→1→3→4→6 (5阶段) | 简单模块、原型验证、快速迭代 | Minimal |
-| **Standard** | 0→1→2→3→4→5→6 (7阶段) | 一般项目、推荐默认 | Standard |
-| **Enterprise** | 7+阶段含子阶段 | 关键项目、工业级质量 | Strict |
-
-### 阶段流程对比
-
-| Stage | Quick | Standard | Enterprise | 说明 |
-|-------|-------|----------|------------|------|
-| 0 | ✅ | ✅ | ✅ | 项目初始化 |
-| 1 | ✅(简化) | ✅ | ✅(含评审) | 架构规格 |
-| 1.5 | ❌ | ❌ | ✅ | 架构评审 |
-| 2 | ❌ | ✅ | ✅ | 虚拟时序建模 |
-| 3 | ✅ | ✅ | ✅(含评审) | RTL代码生成 |
-| 3.5 | ❌ | ❌ | ✅ | 代码评审与优化 |
-| 4 | ✅(简化) | ✅ | ✅ | 仿真验证 |
-| 5 | ❌ | ✅ | ✅ | 综合分析 |
-| 6 | ✅ | ✅ | ✅ | 项目收尾 |
-
-### 核心文件
-
-- `veriflow_ctl.py` — 主控制器，v8.2.0 重写支持多模式
-- `verilog_flow/defaults/project_templates.json` — 三种模式的完整配置模板
-- `SKILL.md` — Claude Code skill 入口，v8.2.0 简化 60%
-- `prompts/` — 各阶段的 prompt 模板，新增 `stage1_spec_quick.md`
+> 每次打开项目时先读此文件，快速恢复上下文。
 
 ---
 
-## 最近改动记录
+## 当前版本
 
-### 2026-03-21: v8.2.0 多模式架构优化
+**v8.3.1** — 2026-03-24
 
-**问题**: 原流程对简单项目过重，7个Stage全部走一遍不适合快速原型验证；Prompt过于冗长，token消耗大；SKILL.md执行协议过于繁琐。
+---
 
-**改动**:
+## 项目架构
 
-1. **引入三种执行模式**
-   - Quick模式：5个阶段（0→1→3→4→6），跳过Stage 2时序建模和Stage 5综合
-   - Standard模式：7个阶段，推荐默认
-   - Enterprise模式：含子阶段（1.5架构评审、3.5代码评审），严格验证
+控制权反转（Control Flow Inversion）：Python 主控状态机 + LLM Worker 节点。
 
-2. **重写 veriflow_ctl.py**
-   - 新增 `MODE_CONFIG` 配置三种模式
-   - 新增 `VALIDATION_RULES` 按级别定义验证规则（minimal/standard/strict）
-   - 新增 `init` 命令用于项目初始化
-   - 新增 `mode` 命令用于查看/切换模式
-   - `validate` 和 `complete` 现在根据当前模式使用对应的验证规则
-
-3. **新增 project_templates.json**
-   - 定义三种模式的完整配置
-   - 包括 stages、validation_level、features、prompt_style、testbench_depth
-
-4. **简化 SKILL.md**
-   - 执行协议从冗长描述简化为清晰的4步循环
-   - 新增模式选择指南
-   - 移除强制"大声说出"步骤
-
-5. **新增 Quick 模式专用 Prompt**
-   - `stage1_spec_quick.md`：精简版Stage 1 Prompt，约2000 tokens
-
-6. **新增 CHANGELOG.md**
-   - 记录 v8.0-v8.2 的主要变更
-
-**数据流**: （与 v8.1 保持不变）
 ```
-requirement.md
-    ↓ (Stage 1)
-structured_requirements.json
-    ↓ (Stage 2)
-requirements_coverage_matrix.json
-    ↓ (Stage 4)
-requirements_coverage_report.json
+veriflow_ctl.py          ← 唯一入口，主控所有阶段
+prompts/                 ← 每个 stage 的 LLM 工作指令
+tools/                   ← EDA 工具封装（iverilog / Yosys）
+verilog_flow/
+  common/kpi.py          ← KPI 追踪（已接入 pipeline）
+  defaults/
+    project_templates.json  ← 模式配置（驱动 MODE_STAGES）
+    coding_style/generic/   ← 风格指南（注入 Stage 3）
+    templates/generic/      ← Verilog 模板（注入 Stage 3）
+  stage1/schemas/arch_spec_v2.json  ← spec.json schema 校验
 ```
 
 ---
 
-## 设计决策记录
+## 阶段流程
 
-### v8.2 多模式架构设计决策
+| 模式 | 阶段序列 |
+|------|---------|
+| quick | 1 → 3 → 4(lint-only) |
+| standard | 1 → 2 → 2.5 → 3 → 3.5 → 4(sim) |
+| enterprise | 1 → 2 → 2.5 → 3 → 3.5 → 4(sim) → 5 |
 
-**决策**: 引入 Quick/Standard/Enterprise 三种执行模式
+阶段编号说明：
+- **1** Architect（REPL 交互，生成 spec.json）
+- **2** Timing Model（生成 timing_model.yaml + testbench）
+- **2.5** Human Gate（人工审查 timing model）
+- **3** RTL Coder（逐模块生成 Verilog）
+- **3.5** Skill D（静态质量分析）
+- **4** Simulation Loop（lint + 仿真，Debugger 自动修复）
+- **5** Yosys Synthesis + KPI（Enterprise 专属）
 
-**理由**:
-- 简单项目（如FIFO、计数器）走完整7阶段过于沉重
-- 快速原型验证需要最小化开销
-- 复杂项目仍需要完整的工业级流程
+---
 
-**权衡**:
-- Quick模式减少验证环节，可能降低质量保障
-- 提供模式切换功能，项目可以随时升级
+## 关键文件
 
-**相关文件**:
-- `verilog_flow/defaults/project_templates.json` - 模式配置
-- `veriflow_ctl.py` - 模式感知验证
-- `prompts/stage1_spec_quick.md` - Quick模式专用Prompt
+| 文件 | 用途 |
+|------|------|
+| `veriflow_ctl.py` | 主控制器（~2100 行） |
+| `prompts/stage1_architect.md` | Stage 1 REPL 指令 |
+| `prompts/stage2_timing.md` | Stage 2 时序建模指令 |
+| `prompts/stage3_coder.md` | Stage 3 全量生成（含 {{CODING_STYLE}} / {{VERILOG_TEMPLATES}}） |
+| `prompts/stage3_module.md` | Stage 3 单模块生成（同上） |
+| `prompts/stage35_skill_d.md` | Stage 3.5 静态分析指令 |
+| `prompts/stage4_debugger.md` | Stage 4 调试修复指令 |
+| `README.md` | 用户文档（中文） |
+| `CHANGELOG.md` | 版本变更记录 |
+| `CLAUDE.md` | Claude Code 工作指引 |
+
+---
+
+## v8.3.1 主要改动（本次会话完成）
+
+**代码优化（veriflow_ctl.py）：**
+- 修复 `sys.exit()` 绕过 pipeline 状态保存的 bug
+- 修复非 Windows 文件句柄泄漏
+- 移除死代码（`[B]ack` 选项、`SKILL_DIR` 别名、重复 import）
+- 统一延迟 import 到顶层（hashlib / traceback / yaml）
+
+**功能接入：**
+- `project_templates.json` → 驱动 `MODE_STAGES`
+- `coding_style/` + `templates/` → 注入 Stage 3 prompt 上下文
+- `arch_spec_v2.json` → Stage 1 validate 做 JSON Schema 校验
+- `kpi.py` → pipeline 全程记录 metrics，结束时打印汇总
+
+**新功能：**
+- `--resume`：断点续跑，跳过已完成 stage
+- Stage 2 支持 `--feedback` 参数
+- `cmd_validate` 补全 Stage 2 内容校验 + Stage 2.5/5 支持
+
+**文档清理：**
+- 删除：`README_EN.md` / `REFACTOR_SUMMARY.md` / `request.md` / `SKILL.md`
+- 删除：legacy prompt 文件（`stage3_codegen.md` / `stage4_sim.md`）
+- 删除：根目录空 `workspace/` 文件夹
 
 ---
 
 ## 待办事项
 
-- [ ] 添加更多 Quick 模式专用 Prompt（Stage 3、4 的简化版）
-- [ ] 为 Enterprise 模式添加子阶段支持（1.5、3.5）
-- [ ] 添加模式切换时的数据迁移逻辑
-- [ ] 编写多模式使用示例和教程
-- [ ] 收集用户反馈，优化各模式的验证规则
+- [ ] `jsonschema` 库未在 requirements 中声明（可选依赖，需补充说明）
+- [ ] `verilog_flow/common/experience_db.py` 仍未接入（经验数据库，中期规划）
+- [ ] Stage 1 超时（3600s）不可配置，可考虑加 `--timeout` 参数
+- [ ] Enterprise 模式子阶段（1.5 架构评审）尚未实现（`project_templates.json` 中 enterprise 的 stages 列表暂用 Python 默认值，不从 JSON 加载）
+
+---
+
+## 常用命令
+
+```bash
+# 运行流水线
+python veriflow_ctl.py run --mode standard -d ./my_project
+
+# 断点续跑
+python veriflow_ctl.py run --mode standard -d ./my_project --resume
+
+# 带反馈修订
+python veriflow_ctl.py run --mode standard -d ./my_project --feedback feedback.md
+
+# 只重新生成某个模块
+python veriflow_ctl.py run --mode standard -d ./my_project --stages 3 --modules uart_tx
+
+# 验证某阶段输出
+python veriflow_ctl.py validate --stage 1 -d ./my_project
+```

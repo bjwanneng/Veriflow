@@ -11,7 +11,7 @@ VeriFlow 8.3 采用**控制权反转**架构：Python 作为主控状态机，LL
 │                      Python Controller                            │
 │                   (veriflow_ctl.py — Master)                      │
 ├──────────┬──────────┬──────────┬──────────┬──────────┬──────────┤
-│ Stage 1  │ Stage 2  │ Stage 36 │ Stage 3  │ Stage 35 │ Stage 4  │
+│ Stage 1  │ Stage 2  │Stage 2.5 │ Stage 3  │Stage 3.5 │ Stage 4  │
 │Architect │ Timing   │  Human   │  Coder   │ Skill D  │  Debug   │
 │(REPL交互)│  Model   │   Gate   │  (RTL)   │ (静态分析)│ (仿真循环)│
 └──────────┴──────────┴──────────┴──────────┴──────────┴──────────┘
@@ -27,8 +27,8 @@ VeriFlow 8.3 采用**控制权反转**架构：Python 作为主控状态机，LL
 | 模式 | 阶段序列 | 适用场景 |
 |------|---------|---------|
 | **Quick** | 1 → 3 → 4(lint-only) | 快速语法验证，几分钟出结果 |
-| **Standard** | 1 → 2 → 36 → 3 → 35 → 4(sim) | 完整功能验证（推荐） |
-| **Enterprise** | 1 → 2 → 36 → 3 → 35 → 4(sim) → 5 | 含综合 + KPI 比对 |
+| **Standard** | 1 → 2 → 2.5 → 3 → 3.5 → 4(sim) | 完整功能验证（推荐） |
+| **Enterprise** | 1 → 2 → 2.5 → 3 → 3.5 → 4(sim) → 5 | 含综合 + KPI 比对 |
 
 ## 阶段说明
 
@@ -43,7 +43,7 @@ VeriFlow 8.3 采用**控制权反转**架构：Python 作为主控状态机，LL
 - 同步生成 `workspace/tb/tb_<design>.v`（激励与 Golden Trace 同源）
 - YAML 格式直观，便于人工审查
 
-### Stage 36 — Human Gate（人工门控）
+### Stage 2.5 — Human Gate（人工门控）
 - 暂停流水线，展示 timing_model.yaml 供用户审查
 - 用户确认行为规格正确后，才进入代码生成阶段
 - 防止错误的行为规格传播到后续阶段
@@ -52,7 +52,7 @@ VeriFlow 8.3 采用**控制权反转**架构：Python 作为主控状态机，LL
 - 逐模块生成 Verilog RTL，输出到 `workspace/rtl/`
 - 不生成 TB（TB 来自 Stage 2，保持激励一致性）
 
-### Stage 35 — Skill D（静态质量分析）
+### Stage 3.5 — Skill D（静态质量分析）
 - 读取所有 RTL 文件，进行静态分析（无需 EDA 工具）
 - 检测：逻辑深度估算、CDC 风险、Latch 推断风险
 - 输出 `workspace/docs/static_report.json`
@@ -152,7 +152,7 @@ my_project/
     ├── docs/
     │   ├── spec.json           # 架构规格（Stage 1 输出）
     │   ├── timing_model.yaml   # 行为断言 + 激励（Stage 2 输出）
-    │   ├── static_report.json  # 静态分析报告（Stage 35 输出）
+    │   ├── static_report.json  # 静态分析报告（Stage 3.5 输出）
     │   ├── synth_report.json   # 综合报告（Stage 5 输出）
     │   └── stage*.done         # 阶段完成哨兵文件
     ├── rtl/
@@ -173,8 +173,8 @@ my_project/
 |---------|---------|
 | spec.json 缺少 target_kpis | Stage 1 validate |
 | timing_model.yaml 字段不完整 | Stage 2 validate |
-| 逻辑深度超过 critical_path_budget | Stage 35 |
-| CDC 风险等级为 HIGH | Stage 35 |
+| 逻辑深度超过 critical_path_budget | Stage 3.5 |
+| CDC 风险等级为 HIGH | Stage 3.5 |
 | 仿真失败超过 max_iterations | Stage 4 |
 | KPI 缺口 > 20% | Stage 5 |
 
@@ -189,21 +189,30 @@ my_project/
 
 ## 更新日志
 
-### v8.3.0 (2026-03-24)
-- **新增 Stage 2**：虚拟时序建模（timing_model.yaml + TB 生成）
-- **新增 Stage 35**：Skill D 静态质量分析（逻辑深度/CDC/Latch）
-- **新增 Stage 36**：人工门控（Stage 2 后暂停等待用户确认）
-- **新增 Stage 5**：Yosys 综合 + KPI 比对（Enterprise 模式）
-- **Stage 1 交互化**：REPL 模式 + 哨兵文件握手，支持问答式架构分析
-- **新增 validate/complete 子命令**：供 Claude 在 REPL 中自调用
-- **TB 防篡改保护**：Debugger 调用前后 MD5 快照，自动还原被篡改的 TB
-- **Stage 4 增强**：Debugger 获得 timing_model.yaml 上下文，修复更有依据
-- 模式重定义：quick=[1,3,4], standard=[1,2,36,3,35,4], enterprise=[1,2,36,3,35,4,5]
+### v8.3.1 (2026-03-24) — 代码质量优化
+- **接入 `verilog_flow/` 支持库**：之前定义了但未使用，现已全部接入
+  - `project_templates.json` 驱动模式配置（MODE_STAGES 不再硬编码）
+  - `coding_style/` + `templates/` 注入 Stage 3 prompt，提升代码生成质量
+  - `arch_spec_v2.json` 用于 Stage 1 spec.json schema 校验
+  - `kpi.py` 在 pipeline 开始/结束时记录 metrics，持久化至 `.veriflow/kpi.json`
+- **新增 `--resume` 标志**：断点续跑，跳过已完成的 stage
+- **Stage 2 支持 `--feedback`**：与 Stage 1/3 保持一致
+- **`cmd_validate` 补全**：Stage 2 增加 YAML 内容校验；支持 Stage 2.5/5
+- **Bug 修复**：`sys.exit()` 绕过 pipeline 状态保存问题；非 Windows 文件句柄泄漏
+- **清理冗余**：删除未使用的 legacy prompt 文件、统一延迟 import
 
-### v8.2.0 (2026-03-23)
-- 控制权反转架构（Python 主控 + LLM Worker）
-- 简化 prompt 集（从 7 个精简到 3 个）
-- 新的 `run` 命令替代旧的 `next/validate/complete`
+### v8.3.0 (2026-03-24) — 完整 5 阶段架构
+- **新增 Stage 2**：虚拟时序建模（timing_model.yaml + TB 生成）
+- **新增 Stage 3.5**：Skill D 静态质量分析（逻辑深度/CDC/Latch）
+- **新增 Stage 2.5**：人工门控（Stage 2 后暂停等待用户确认）
+- **新增 Stage 5**：Yosys 综合 + KPI 比对（Enterprise 模式）
+- **Stage 1 交互化**：REPL 模式 + 哨兵文件握手
+- **TB 防篡改保护**：Debugger 调用前后 MD5 快照
+
+### v8.2.0 (2026-03-23) — 控制权反转架构
+- Python 主控 + LLM Worker 架构
+- 三种执行模式（quick / standard / enterprise）
+- 新的 `run` 命令
 
 ## 许可证
 
@@ -211,4 +220,4 @@ MIT License — 详见 LICENSE 文件
 
 ---
 
-**版本**: 8.3.0 | **更新日期**: 2026-03-24
+**版本**: 8.3.1 | **更新日期**: 2026-03-24
