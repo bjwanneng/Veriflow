@@ -1566,10 +1566,9 @@ def stage4_simulation_loop(project_dir: Path, mode: str) -> bool:
             tb_files = [f for f in rtl_files if f.name.startswith("tb_")]
 
         if not tb_files:
-            _log(f"[Iteration {iteration}]", "No testbench found (workspace/tb/tb_*.v) — skipping simulation", "warning")
-            _log(f"[Iteration {iteration}]", "✓ Stage 4 complete (no testbench)", "success")
-            print("stage 4 complete")
-            return True
+            _log(f"[Iteration {iteration}]", "ERROR: No testbench found (workspace/tb/tb_*.v) — cannot simulate", "error")
+            _log(f"[Iteration {iteration}]", "Escalating to Supervisor to regenerate testbench (Stage 2)", "error")
+            return False
 
         testbench = tb_files[0]
         all_files = rtl_files + [testbench] if testbench not in rtl_files else rtl_files
@@ -1666,11 +1665,10 @@ def cmd_validate(project_dir: Path, stage: int) -> int:
             errors.append("MISSING: workspace/rtl/*.v")
         else:
             # Run lint as deterministic check
-            passed, output = run_lint(project_dir, rtl_files)
+            passed, output = run_lint(project_dir, rtl_files,
+                                      log_name="linter_stage3")
             if not passed:
                 errors.append(f"LINT_FAIL:\n{output[:500]}")
-
-    elif stage == 35:
         report_path = paths["docs"] / "static_report.json"
         if not report_path.exists():
             errors.append("MISSING: workspace/docs/static_report.json")
@@ -1689,10 +1687,10 @@ def cmd_validate(project_dir: Path, stage: int) -> int:
         if not rtl_files:
             errors.append("MISSING: workspace/rtl/*.v")
         else:
-            passed, output = run_lint(project_dir, rtl_files)
+            passed, output = run_lint(project_dir, rtl_files,
+                                      log_name="linter_stage4")
             if not passed:
                 errors.append(f"LINT_FAIL:\n{output[:500]}")
-            # Sim check if testbench exists
             tb_files = list(paths["tb"].glob("tb_*.v"))
             if tb_files:
                 sim_passed, sim_output = run_sim(project_dir, tb_files[0], rtl_files + tb_files)
@@ -1830,13 +1828,28 @@ def stage2_timing_model(project_dir: Path, mode: str) -> bool:
     paths["tb"].mkdir(parents=True, exist_ok=True)
     paths["docs"].mkdir(parents=True, exist_ok=True)
 
+    spec_json = paths["spec"].read_text(encoding="utf-8")
+
     context: Dict[str, str] = {
         "PROJECT_DIR": str(project_dir),
         "MODE":        mode,
         "STAGE_NAME":  "stage2_timing",
+        "SPEC_JSON":   spec_json,
     }
 
     success, _ = call_claude(PROMPTS_DIR / "stage2_timing.md", context)
+
+    # Validate outputs were actually written to disk
+    if success:
+        timing_yaml = paths["docs"] / "timing_model.yaml"
+        tb_files = list(paths["tb"].glob("tb_*.v"))
+        if not timing_yaml.exists():
+            print("ERROR: Stage 2 reported success but timing_model.yaml not found")
+            success = False
+        elif not tb_files:
+            print("ERROR: Stage 2 reported success but no testbench (tb_*.v) found")
+            success = False
+
     if success:
         print("stage 2 complete")
     return success
@@ -1877,7 +1890,7 @@ def stage35_skill_d(project_dir: Path, mode: str) -> bool:
         _log(f"[Lint {iteration}/{max_iterations}]", "Running lint check...", "info")
         lint_passed, lint_output = run_lint(
             project_dir, rtl_files,
-            log_name=f"linter_iter_{iteration}"
+            log_name=f"linter_stage35_iter{iteration}"
         )
 
         if lint_passed:
@@ -2397,6 +2410,12 @@ def run_project(mode: str, project_dir: Path,
             print(f"\n{'='*70}")
             print(f"Executing Stage {stage_num}")
             print('='*70)
+
+            # 每个 stage 切换到独立的 jsonl 日志文件
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            stage_tag = str(stage_num).replace(".", "_")
+            stage_jsonl = log_dir / f"stage{stage_tag}_{ts}.jsonl"
+            _set_log_file(stage_jsonl)
 
             if tracker:
                 try:

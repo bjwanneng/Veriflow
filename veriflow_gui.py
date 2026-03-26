@@ -324,13 +324,23 @@ def find_workspace_file(project_path: Path, filename: str) -> Optional[Path]:
 # ============================================================================
 
 def save_project_state(project_path: Path, state: dict) -> None:
-    """保存运行状态到 <project>/.veriflow/project_state.json"""
+    """保存运行状态到 <project>/.veriflow/project_state.json，
+    同时把 mode 同步写回 project_config.json。"""
     try:
         vf_dir = project_path / ".veriflow"
         vf_dir.mkdir(parents=True, exist_ok=True)
         (vf_dir / "project_state.json").write_text(
             json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+        # 同步 mode 到 project_config.json
+        if "mode" in state:
+            cfg_file = vf_dir / "project_config.json"
+            try:
+                cfg = json.loads(cfg_file.read_text(encoding="utf-8")) if cfg_file.exists() else {}
+                cfg["mode"] = state["mode"]
+                cfg_file.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
     except Exception as e:
         print(f"保存项目状态失败: {e}")
 
@@ -343,6 +353,67 @@ def load_project_state(project_path: Path) -> dict:
         except Exception:
             pass
     return {}
+
+# Stage 顺序定义（用于"重跑时清除后续"逻辑）
+_ALL_STAGE_ORDER = [1, 1.5, 2, 2.5, 3, 3.5, 4, 5]
+
+_STAGE_LABELS = {
+    1:   "S1 架构",
+    1.5: "S1.5 微架构",
+    2:   "S2 时序",
+    2.5: "S2.5 审查",
+    3:   "S3 RTL",
+    3.5: "S3.5 Lint",
+    4:   "S4 仿真",
+    5:   "S5 综合",
+}
+
+_MODE_STAGES = {
+    "quick":      [1, 1.5, 3, 3.5],
+    "standard":   [1, 1.5, 2, 3, 3.5, 4, 5],
+    "enterprise": [1, 1.5, 2, 3, 3.5, 4, 5],
+}
+
+def _render_stage_status(completed_stages: list, mode: str) -> str:
+    """生成 stage 状态指示器 HTML（绿圈=完成，灰圈=未完成）"""
+    active = _MODE_STAGES.get(mode, _MODE_STAGES["standard"])
+    completed_set = set(float(s) for s in completed_stages)
+    parts = []
+    for s in active:
+        label = _STAGE_LABELS.get(s, f"S{s}")
+        done = float(s) in completed_set
+        color = "#2ea043" if done else "#484f58"
+        symbol = "●" if done else "○"
+        parts.append(
+            f"<span style='color:{color};margin-right:12px;white-space:nowrap'>"
+            f"{symbol} {label}</span>"
+        )
+    return (
+        "<div style='font-family:Consolas,monospace;font-size:13px;"
+        "padding:6px 4px;line-height:1.8'>" + "".join(parts) + "</div>"
+    )
+
+def _get_btn_states(completed_stages: list, mode: str) -> dict:
+    """计算每个 stage 按钮的 interactive 和 variant。
+    规则：stage 1 始终可点；其他 stage 需要前一个已完成才可点。
+    已完成的 stage 按钮显示绿色（variant=primary）。
+    返回 {stage_num: (interactive, variant)} 字典。
+    """
+    active = _MODE_STAGES.get(mode, _MODE_STAGES["standard"])
+    completed_set = set(float(s) for s in completed_stages)
+    result = {}
+    for i, s in enumerate(active):
+        done = float(s) in completed_set
+        if i == 0:
+            clickable = True
+        else:
+            prev = active[i - 1]
+            clickable = float(prev) in completed_set
+        result[s] = (clickable, "primary" if done else "secondary")
+    for s in _ALL_STAGE_ORDER:
+        if s not in result:
+            result[s] = (False, "secondary")
+    return result
 
 def _clean_old_run_logs(log_base: Path, keep_n: int = 10) -> None:
     """Keep only the most recent keep_n run_*.log files."""
@@ -941,6 +1012,10 @@ def create_ui() -> gr.Blocks:
 
                             gr.HTML("<hr style='margin:8px 0'>")
                             gr.Markdown("### 按阶段执行")
+                            stage_status_html = gr.HTML(
+                                value=_render_stage_status([], "standard"),
+                                label=""
+                            )
                             with gr.Row():
                                 stage1_btn  = gr.Button("S1: 架构规格", size="sm", variant="secondary")
                                 stage15_btn = gr.Button("S1.5: 微架构", size="sm", variant="secondary")
@@ -1111,12 +1186,26 @@ def create_ui() -> gr.Blocks:
         # ======================================================================
         def on_project_select(working_dir, project_name):
             if not project_name or project_name == "(新建项目)":
-                return "", "就绪", 0, [], gr.Dropdown(choices=[], value=None), ""
+                empty_btns = [gr.update(interactive=True)] + [gr.update(interactive=False)] * 6
+                return ("", "就绪", 0, [], gr.Dropdown(choices=[], value=None), "",
+                        gr.update(), gr.update(), _render_stage_status([], "standard"), *empty_btns)
             project_path = Path(working_dir) / project_name
             # 恢复状态
             state = load_project_state(project_path)
             restored_stage    = state.get("current_stage", "就绪")
             restored_progress = int(state.get("progress", 0))
+            completed_stages  = state.get("completed_stages", [])
+            # 恢复模式：优先 project_state，其次 project_config
+            restored_mode = state.get("mode", "")
+            if not restored_mode:
+                try:
+                    cfg_file = project_path / ".veriflow" / "project_config.json"
+                    if cfg_file.exists():
+                        restored_mode = json.loads(cfg_file.read_text(encoding="utf-8")).get("mode", "standard")
+                except Exception:
+                    pass
+            if not restored_mode:
+                restored_mode = "standard"
             # 恢复日志
             restored_logs = load_latest_log(project_path)
             if not restored_logs and state:
@@ -1141,6 +1230,14 @@ def create_ui() -> gr.Blocks:
             _c = load_config()
             _c["last_project"] = project_name
             save_config(_c)
+            # 计算按钮状态
+            btn_states = _get_btn_states(completed_stages, restored_mode)
+            stage_order = [1, 1.5, 2, 3, 3.5, 4, 5]
+            btn_updates = [
+                gr.update(interactive=btn_states.get(float(s), (False, "secondary"))[0],
+                          variant=btn_states.get(float(s), (False, "secondary"))[1])
+                for s in stage_order
+            ]
             return (
                 restored_logs,
                 restored_stage,
@@ -1148,12 +1245,18 @@ def create_ui() -> gr.Blocks:
                 files,
                 gr.Dropdown(choices=names, value=names[0] if names else None),
                 req_content,
+                gr.update(value=restored_mode),
+                gr.update(value=restored_mode),
+                _render_stage_status(completed_stages, restored_mode),
+                *btn_updates,
             )
 
         project_dropdown.change(
             fn=on_project_select,
             inputs=[working_dir_input, project_dropdown],
-            outputs=[log_output, current_stage, progress_bar, file_list, file_selector, requirement_text]
+            outputs=[log_output, current_stage, progress_bar, file_list, file_selector, requirement_text,
+                     mode_dropdown, run_mode_display, stage_status_html,
+                     stage1_btn, stage15_btn, stage2_btn, stage3_btn, stage35_btn, stage4_btn, stage5_btn]
         )
 
         # ======================================================================
@@ -1471,7 +1574,8 @@ def create_ui() -> gr.Blocks:
 
             def _yield(log, stage, prog, run_vis=None, stop_vis=None,
                         review_vis=None, preview_val=None,
-                        modules_choices=None, modules_vis=None):
+                        modules_choices=None, modules_vis=None,
+                        stage_status=None, btn_states=None):
                 modules_upd = _NO_CHANGE
                 if modules_choices is not None or modules_vis is not None:
                     kw = {}
@@ -1481,6 +1585,11 @@ def create_ui() -> gr.Blocks:
                     if modules_vis is not None:
                         kw["visible"] = modules_vis
                     modules_upd = gr.update(**kw)
+                def _btn(s):
+                    if btn_states is None:
+                        return _NO_CHANGE
+                    interactive, variant = btn_states.get(float(s), (False, "secondary"))
+                    return gr.update(interactive=interactive, variant=variant)
                 return (
                     log,
                     stage,
@@ -1490,6 +1599,8 @@ def create_ui() -> gr.Blocks:
                     gr.update(visible=review_vis) if review_vis is not None else _NO_CHANGE,
                     gr.update(value=preview_val)  if preview_val is not None else _NO_CHANGE,
                     modules_upd,
+                    gr.update(value=stage_status) if stage_status is not None else _NO_CHANGE,
+                    _btn(1), _btn(1.5), _btn(2), _btn(3), _btn(3.5), _btn(4), _btn(5),
                 )
 
             if not project_name or project_name == "(新建项目)":
@@ -1544,7 +1655,24 @@ def create_ui() -> gr.Blocks:
                 except Exception:
                     pass
 
-            def _save_state(status, progress, stage):
+            def _save_state(status, progress, stage, completed_stage_num=None, invalidate_from=None):
+                """保存状态，合并 completed_stages。
+                completed_stage_num: 刚完成的 stage，追加到 completed_stages。
+                invalidate_from: 重跑该 stage 时，清除该 stage 及之后的 completed_stages。
+                """
+                existing = load_project_state(project_path)
+                completed = list(existing.get("completed_stages", []))
+                if invalidate_from is not None:
+                    order = _ALL_STAGE_ORDER
+                    try:
+                        idx = order.index(float(invalidate_from))
+                        completed = [s for s in completed if float(s) < order[idx]]
+                    except ValueError:
+                        pass
+                if completed_stage_num is not None:
+                    key = float(completed_stage_num)
+                    if key not in [float(s) for s in completed]:
+                        completed.append(completed_stage_num)
                 save_project_state(project_path, {
                     "last_run": datetime.now().isoformat(),
                     "mode": mode,
@@ -1552,7 +1680,9 @@ def create_ui() -> gr.Blocks:
                     "progress": progress,
                     "current_stage": stage,
                     "log_file": log_path.name,
+                    "completed_stages": completed,
                 })
+                return completed
 
             # Stage 进度映射
             stage_progress = {
@@ -1623,7 +1753,11 @@ def create_ui() -> gr.Blocks:
                 s_info = stage_progress.get(stage_num, {"start": cur_prog, "done": cur_prog, "label": f"Stage {stage_num}"})
                 cur_prog  = s_info["start"]
                 cur_stage = s_info["label"]
-                _save_state("in_progress", cur_prog, cur_stage)
+                # 重跑该 stage 时清除该 stage 及后续的 completed_stages
+                completed = _save_state("in_progress", cur_prog, cur_stage, invalidate_from=stage_num)
+                yield _yield(emit(f"▶ Stage {stage_num} 开始", "stage"), cur_stage, cur_prog,
+                             stage_status=_render_stage_status(completed, mode),
+                             btn_states=_get_btn_states(completed, mode))
 
                 # Build command
                 cmd = [sys.executable, "-u", ctl_script, "run",
@@ -1728,12 +1862,16 @@ def create_ui() -> gr.Blocks:
 
                 # ── Review Gate（只对有实质产物的 stage 弹出）────────────────
                 cur_prog = s_info["done"]
-                _save_state("review", cur_prog, cur_stage)
+                # stage 完成，追加到 completed_stages
+                completed = _save_state("review", cur_prog, cur_stage, completed_stage_num=stage_num)
 
                 # 不需要人工审查的 stage 直接推进
                 REVIEW_STAGES = {1, 3}
                 if stage_num not in REVIEW_STAGES:
                     stage_i += 1
+                    yield _yield(emit(f"✅ Stage {stage_num} 完成", "success"), cur_stage, cur_prog,
+                                 stage_status=_render_stage_status(completed, mode),
+                                 btn_states=_get_btn_states(completed, mode))
                     continue
 
                 review_content = _get_review_content(project_path, stage_num)
@@ -1784,10 +1922,12 @@ def create_ui() -> gr.Blocks:
                     # Cleanup feedback file and advance
                     if feedback_path.exists():
                         feedback_path.unlink()
+                    stage_i += 1
                     yield _yield(emit(f"✅ Stage {stage_num} 已批准，继续...", "success"),
                                  cur_stage, cur_prog,
-                                 review_vis=False)
-                    stage_i += 1
+                                 review_vis=False,
+                                 stage_status=_render_stage_status(completed, mode),
+                                 btn_states=_get_btn_states(completed, mode))
                 else:
                     # Re-run same stage with feedback (feedback_path written by reject handler)
                     yield _yield(emit(f"🔄 Stage {stage_num} 重新生成（含反馈）...", "stage"),
@@ -1800,14 +1940,16 @@ def create_ui() -> gr.Blocks:
             app_state.process = None
             if stage_i >= len(all_stages):
                 cur_prog, cur_stage = 100, "✅ 完成"
-                _save_state("completed", cur_prog, cur_stage)
+                completed = _save_state("completed", cur_prog, cur_stage)
                 if stage_to_run is not None:
                     done_msg = f"✅ Stage {stage_to_run} 执行完成"
                 else:
                     done_msg = "✅ 流水线全部完成！"
                 yield _yield(emit(done_msg, "success"),
                              cur_stage, cur_prog,
-                             run_vis=True, stop_vis=False, review_vis=False)
+                             run_vis=True, stop_vis=False, review_vis=False,
+                             stage_status=_render_stage_status(completed, mode),
+                             btn_states=_get_btn_states(completed, mode))
             else:
                 _save_state("stopped", cur_prog, cur_stage)
                 yield _yield(emit("⏹ 流水线已停止", "warning"),
@@ -1818,12 +1960,14 @@ def create_ui() -> gr.Blocks:
             fn=run_pipeline_stream,
             inputs=[working_dir_input, project_dropdown, mode_dropdown, use_mock, max_workers_slider],
             outputs=[log_output, current_stage, progress_bar, run_btn, stop_btn,
-                     review_panel, review_preview, modules_checkboxes]
+                     review_panel, review_preview, modules_checkboxes, stage_status_html,
+                     stage1_btn, stage15_btn, stage2_btn, stage3_btn, stage35_btn, stage4_btn, stage5_btn]
         )
 
         # ── 单 Stage 执行包装函数 ──────────────────────────────────────────────
         _stage_outputs = [log_output, current_stage, progress_bar, run_btn, stop_btn,
-                          review_panel, review_preview, modules_checkboxes]
+                          review_panel, review_preview, modules_checkboxes, stage_status_html,
+                          stage1_btn, stage15_btn, stage2_btn, stage3_btn, stage35_btn, stage4_btn, stage5_btn]
 
         def _mk_stage_runner(s):
             def _fn(wd, proj, mode, mock, workers):
