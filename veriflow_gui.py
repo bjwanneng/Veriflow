@@ -24,6 +24,16 @@ except ImportError:
     print("❌ 需要安装 Gradio: pip install gradio>=4.0")
     sys.exit(1)
 
+# 尝试导入 rich 库（可选）
+try:
+    from rich.console import Console
+    from rich.text import Text
+    from rich.theme import Theme
+    from rich.style import Style
+    _rich_available = True
+except ImportError:
+    _rich_available = False
+
 # ============================================================================
 # 全局状态
 # ============================================================================
@@ -48,6 +58,7 @@ class GlobalState:
         # Log tracking
         self.current_log_path: Optional[Path] = None
         self.current_logs: List[str] = []   # all log lines for filter support
+        self.current_logs_html: List[str] = []  # HTML formatted logs for display
 
     def reset(self):
         self.is_running = False
@@ -61,6 +72,7 @@ class GlobalState:
         self.rerun_modules = None
         self.current_log_path = None
         self.current_logs = []
+        self.current_logs_html = []
 
 app_state = GlobalState()
 
@@ -158,6 +170,94 @@ LOG_ICONS: Dict[str, str] = {
     "error": "❌", "stage": "🔄", "command": "⚡"
 }
 
+# Rich 终端风格主题
+RICH_THEME = Theme({
+    "log.timestamp": "bright_black",
+    "log.info": "cyan",
+    "log.success": "green",
+    "log.warning": "yellow",
+    "log.error": "red bold",
+    "log.stage": "blue bold",
+    "log.command": "magenta",
+    "log.message": "default",
+})
+
+# 全局 Rich 控制台（如果可用）
+_rich_console = None
+_rich_html_console = None
+if _rich_available:
+    try:
+        _rich_console = Console(theme=RICH_THEME)
+        from rich.console import Console as HTMLConsole
+        _rich_html_console = HTMLConsole(theme=RICH_THEME, record=True, width=120)
+    except Exception:
+        _rich_available = False
+
+def _rich_log_to_html(message: str, log_type: str = "info") -> str:
+    """使用 Rich 将日志格式化为 HTML，实现终端风格显示"""
+    if not _rich_available or not _rich_html_console:
+        # 如果 Rich 不可用，使用简单的 HTML 格式化
+        color_map = {
+            "info": "#58a6ff", "success": "#3fb950", "warning": "#d29922",
+            "error": "#f85149", "stage": "#809fff", "command": "#d2a8ff"
+        }
+        color = color_map.get(log_type, "#58a6ff")
+        return f'<span style="color:{color}">{message}</span>'
+
+    try:
+        from rich.text import Text
+        from rich.markup import escape
+        import re
+
+        # 如果消息已经格式化，先解析它
+        parsed_msg = message
+        timestamp = ""
+        icon = LOG_ICONS.get(log_type, "ℹ️")
+        level_str = log_type.upper().ljust(7)
+
+        # 尝试从消息中提取时间戳、图标和级别
+        match = re.match(r'^\[(\d{2}:\d{2}:\d{2}\.\d{3})\]\s+(\S+)\s+(\S+)\s*(.*)$', message)
+        if match:
+            timestamp = match.group(1)
+            icon = match.group(2)
+            level_str = match.group(3)
+            parsed_msg = match.group(4)
+        else:
+            # 没有格式化的消息，添加当前时间戳
+            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+
+        # 构建 Rich 格式化文本
+        rich_text = Text()
+        rich_text.append(f"[{timestamp}] ", style="log.timestamp")
+        rich_text.append(f"{icon} ", style=f"log.{log_type}")
+        rich_text.append(f"{level_str} ", style=f"log.{log_type}")
+        rich_text.append(escape(parsed_msg), style="log.message")
+
+        # 清除之前的记录
+        _rich_html_console.clear()
+        # 输出并捕获 HTML
+        _rich_html_console.print(rich_text)
+        html_output = _rich_html_console.export_html(inline_styles=True)
+
+        # 简化 HTML，只保留 body 内容
+        body_match = re.search(r'<body>(.*?)</body>', html_output, re.DOTALL)
+        if body_match:
+            content = body_match.group(1)
+            # 替换背景色为深色主题
+            content = content.replace('background-color: white', 'background-color: #0d1117')
+            content = content.replace('color: black', 'color: #f0f6fc')
+            return content
+        return f'<span style="color:#58a6ff">{message}</span>'
+
+    except Exception:
+        # 回退到简单的 HTML 格式化
+        color_map = {
+            "info": "#58a6ff", "success": "#3fb950", "warning": "#d29922",
+            "error": "#f85149", "stage": "#809fff", "command": "#d2a8ff"
+        }
+        color = color_map.get(log_type, "#58a6ff")
+        return f'<span style="color:{color}">{message}</span>'
+
 def add_log(message: str, log_type: str = "info") -> str:
     """Generate structured log line for GUI display (matches veriflow_ctl.py format).
 
@@ -171,7 +271,15 @@ def add_log(message: str, log_type: str = "info") -> str:
 
     timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
     icon = LOG_ICONS.get(log_type, "ℹ️")
-    return f"[{timestamp}] {icon} {message}"
+
+    # 优化格式：添加适当的间距和对齐，使用更清晰的结构
+    level_map = {
+        "info": "INFO", "success": "SUCCESS", "warning": "WARNING",
+        "error": "ERROR", "stage": "STAGE", "command": "COMMAND"
+    }
+    level_str = level_map.get(log_type, "INFO").ljust(7)
+
+    return f"[{timestamp}] {icon} {level_str} {message}"
 
 def scan_generated_files(project_path: Path) -> List[Dict[str, str]]:
     """扫描 workspace 下所有子目录（rtl/sim/docs）的生成文件"""
@@ -479,6 +587,27 @@ def create_ui() -> gr.Blocks:
         border-bottom: 2px solid #667eea;
         padding-bottom: 8px;
         margin-bottom: 20px;
+    }
+
+    #log_output textarea {
+        font-family: "Consolas", "Courier New", monospace !important;
+        font-size: 14px !important;
+        line-height: 1.6 !important;
+        background-color: #f8fafc !important;
+        color: #1e293b !important;
+        border: 1px solid #e2e8f0 !important;
+        border-radius: 8px !important;
+        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06) !important;
+    }
+
+    #log_output textarea::placeholder {
+        color: #94a3b8 !important;
+    }
+
+    /* 优化日志过滤效果 */
+    .gr-dataset {
+        border-radius: 8px !important;
+        overflow: hidden !important;
     }
     """
 
@@ -823,8 +952,11 @@ def create_ui() -> gr.Blocks:
                                     value="全部", scale=3
                                 )
                                 clear_logs_btn = gr.Button("🗑️ 清除", size="sm", scale=1)
-                            log_output = gr.TextArea(
-                                label="", lines=25, interactive=False, autoscroll=True
+                            log_output = gr.HTML(
+                                label="",
+                                value="<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.6;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'>"
+                                       "<div style='color:#8b949e'>等待启动流水线...</div></div>",
+                                elem_id="log_output"
                             )
 
                             # ── Review Gate Panel (hidden until stage completes) ──
@@ -1379,13 +1511,22 @@ def create_ui() -> gr.Blocks:
 
             def emit(msg, log_type="info"):
                 line = add_log(msg, log_type)
+                html_line = _rich_log_to_html(line, log_type)
                 app_state.current_logs.append(line)
-                _display_buf.append(line)
+                app_state.current_logs_html.append(html_line)
                 try:
                     _log_file.write(line + "\n")
                 except Exception:
                     pass
-                return "\n".join(_display_buf)
+                # 构建完整的 HTML 日志显示
+                html_output = "<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.6;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'>"
+                if len(app_state.current_logs_html) > 0:
+                    for html_line in app_state.current_logs_html:
+                        html_output += html_line + "<br>"
+                else:
+                    html_output += "<div style='color:#8b949e'>等待启动流水线...</div>"
+                html_output += "</div>"
+                return html_output
 
             def _close_log_file():
                 try:
@@ -1537,9 +1678,19 @@ def create_ui() -> gr.Blocks:
                                     cur_prog, cur_stage = prog, lbl
                                     _save_state("in_progress", cur_prog, cur_stage)
                                     break
-                            log_type = ("stage"   if "Executing Stage" in line else
-                                        "success" if "COMPLETED" in line or "STAGE_COMPLETE" in line else
-                                        "error"   if "FAILED" in line else "info")
+                            # 更精确的 log_type 判断：避免将包含 "FAILED" 但非错误的行误判
+                            log_type = "info"
+                            if "Executing Stage" in line:
+                                log_type = "stage"
+                            elif "COMPLETED" in line or "STAGE_COMPLETE" in line:
+                                log_type = "success"
+                            elif "❌" in line or "ERROR:" in line or "FAILED:" in line or "VALIDATE: FAIL" in line or "COMPLETE: DENIED" in line:
+                                log_type = "error"
+                            elif "✓" in line or "✅" in line or "PASSED" in line or "VALIDATE: PASS" in line or "COMPLETE: OK" in line:
+                                log_type = "success"
+                            elif "⚠️" in line or "WARNING:" in line:
+                                log_type = "warning"
+                            # 注意：不单独用 "FAILED" 做判断，避免误判
                             yield _yield(emit(line, log_type), cur_stage, cur_prog)
 
                         proc.wait()
@@ -1604,7 +1755,15 @@ def create_ui() -> gr.Blocks:
                     if not app_state.is_running:
                         break
                     time.sleep(0.5)
-                    yield _yield("\n".join(_display_buf),
+                    # 构建当前 HTML 日志用于显示
+                    html_output = "<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.6;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'>"
+                    if len(app_state.current_logs_html) > 0:
+                        for html_line in app_state.current_logs_html:
+                            html_output += html_line + "<br>"
+                    else:
+                        html_output += "<div style='color:#8b949e'>等待启动流水线...</div>"
+                    html_output += "</div>"
+                    yield _yield(html_output,
                                  f"⏸ 审查 Stage {stage_num}", cur_prog)
 
                 # ── Review decision ──────────────────────────────────────────
@@ -1693,14 +1852,25 @@ def create_ui() -> gr.Blocks:
             app_state.is_running    = False
             app_state.review_pending = False
             msg_line = add_log("⏹️ 用户终止了流水线", "warning")
+            html_line = _rich_log_to_html(msg_line, "warning")
+            app_state.current_logs.append(msg_line)
+            app_state.current_logs_html.append(html_line)
             if app_state.current_log_path:
                 try:
                     with open(app_state.current_log_path, "a", encoding="utf-8") as _f:
                         _f.write(msg_line + "\n")
                 except Exception:
                     pass
+            # 构建完整的 HTML 日志显示
+            html_output = "<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.6;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'>"
+            if len(app_state.current_logs_html) > 0:
+                for html_line in app_state.current_logs_html:
+                    html_output += html_line + "<br>"
+            else:
+                html_output += "<div style='color:#8b949e'>等待启动流水线...</div>"
+            html_output += "</div>"
             return (
-                msg_line,
+                html_output,
                 "已停止", int(app_state.progress),
                 gr.update(visible=True), gr.update(visible=False),
                 gr.update(visible=False), gr.update(), gr.update(),
@@ -1748,20 +1918,36 @@ def create_ui() -> gr.Blocks:
         resume_btn.click(fn=resume_pipeline, outputs=[pause_btn, resume_btn])
 
         # 清除日志
-        clear_logs_btn.click(fn=lambda: "", outputs=[log_output])
+        def _clear_logs():
+            app_state.current_logs = []
+            app_state.current_logs_html = []
+            html_output = "<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.6;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'>"
+            html_output += "<div style='color:#8b949e'>日志已清除...</div>"
+            html_output += "</div>"
+            return html_output
+
+        clear_logs_btn.click(fn=_clear_logs, outputs=[log_output])
 
         # 日志过滤器
         def _filter_logs(level: str) -> str:
             if not app_state.current_logs:
-                return ""
+                return "<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.6;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'><div style='color:#8b949e'>等待启动流水线...</div></div>"
             if level == "全部":
-                lines = app_state.current_logs
+                filtered_indices = list(range(len(app_state.current_logs)))
             else:
                 icon_map = {"信息": "ℹ️", "成功": "✅", "警告": "⚠️",
                             "错误": "❌", "阶段": "🔄"}
                 icon = icon_map.get(level, "")
-                lines = [l for l in app_state.current_logs if icon in l]
-            return "\n".join(lines[-2000:])
+                filtered_indices = [i for i, l in enumerate(app_state.current_logs) if icon in l]
+            # 构建过滤后的 HTML
+            html_output = "<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.6;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'>"
+            if filtered_indices:
+                for idx in filtered_indices[-2000:]:
+                    html_output += app_state.current_logs_html[idx] + "<br>"
+            else:
+                html_output += "<div style='color:#8b949e'>没有匹配的日志...</div>"
+            html_output += "</div>"
+            return html_output
 
         log_filter.change(
             fn=_filter_logs,
@@ -1834,21 +2020,48 @@ def create_ui() -> gr.Blocks:
 # ============================================================================
 
 def main():
-    print("=" * 60)
-    print("🚀 VeriFlow GUI 8.2")
-    print("=" * 60)
-    print(f"工作目录: {app_state.working_dir}")
-    print(f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 60)
+    import sys
+    import io
+    import traceback
 
-    demo = create_ui()
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        show_error=True,
-        quiet=False,
-        theme=gr.themes.Soft()
-    )
+    print("VeriFlow GUI 正在启动...")
+
+    try:
+        # 修复 Windows 下的编码问题
+        if sys.platform == "win32":
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+        print("=" * 60)
+        print("VeriFlow GUI 8.2")
+        print("=" * 60)
+        print(f"工作目录: {app_state.working_dir}")
+        print(f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Python 版本: {sys.version}")
+        print(f"系统: {sys.platform}")
+        print("=" * 60)
+
+        print("正在创建 UI...")
+        demo = create_ui()
+
+        print("正在启动服务器...")
+        print("=" * 60)
+        demo.launch(
+            server_name="127.0.0.1",
+            show_error=True,
+            quiet=False,
+            theme=gr.themes.Soft()
+        )
+    except Exception as e:
+        print("\n=" * 60)
+        print("启动错误!")
+        print("=" * 60)
+        print(f"错误类型: {type(e).__name__}")
+        print(f"错误信息: {e}")
+        print("\n堆栈跟踪:")
+        print(traceback.format_exc())
+        print("=" * 60)
+        input("\n按回车键退出...")
 
 if __name__ == "__main__":
     main()
