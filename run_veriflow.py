@@ -24,119 +24,95 @@ import sys
 import time
 import webbrowser
 import os
+import socket
 import platform
-import signal
+
+def find_free_port(start=7860, end=7900):
+    """找到一个可用端口"""
+    for port in range(start, end):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
+    return start  # 回退到默认端口
+
+def wait_for_server(host, port, timeout=30):
+    """等待服务器在指定端口上就绪"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                return True
+        except (OSError, ConnectionRefusedError):
+            time.sleep(0.5)
+    return False
 
 def main():
-    # 检查 Python 版本
     if sys.version_info < (3, 8):
-        print("❌ 需要 Python 3.8 或更高版本")
+        print("ERROR: Python 3.8+ required")
         return
 
-    # 检查是否在 VeriFlow 项目目录中
     if not os.path.exists("veriflow_gui.py"):
-        print("❌ 错误：未找到 veriflow_gui.py 文件")
-        print("请在 VeriFlow 项目根目录中运行此脚本")
+        print("ERROR: veriflow_gui.py not found")
+        print("Please run from the VeriFlow project root directory")
         return
 
     print("=" * 60)
-    print("🚀 VeriFlow GUI 启动脚本")
+    print("VeriFlow GUI Launcher")
     print("=" * 60)
-    print(f"Python 版本: {sys.version}")
-    print(f"系统: {platform.system()} {platform.release()}")
+    print(f"Python: {sys.version.split()[0]}")
+    print(f"OS: {platform.system()} {platform.release()}")
+
+    # 找可用端口
+    port = find_free_port()
+    url = f"http://127.0.0.1:{port}"
+    print(f"Port: {port}")
+    print(f"URL:  {url}")
     print("=" * 60)
 
     try:
-        # 启动 VeriFlow GUI
-        print("正在启动 VeriFlow GUI 服务器...")
+        # 通过环境变量传递端口给 Gradio
+        env = os.environ.copy()
+        env["GRADIO_SERVER_PORT"] = str(port)
+        env["GRADIO_SERVER_NAME"] = "127.0.0.1"
 
-        # 在后台启动服务器
+        print("Starting VeriFlow GUI server...")
         process = subprocess.Popen(
             [sys.executable, "veriflow_gui.py"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            universal_newlines=True
+            env=env,
         )
 
-        print("✅ 服务器已启动")
-
-        # 等待服务器启动并获取输出
-        server_ready = False
-        url = None
-
-        for _ in range(10):
-            time.sleep(1)
-            # 读取输出
-            if process.stdout and not process.stdout.closed:
-                line = process.stdout.readline()
-                if line:
-                    print(line.strip())
-                    if "Running on" in line or "请在浏览器中访问:" in line:
-                        # 提取 URL
-                        if "请在浏览器中访问:" in line:
-                            url = line.strip().split(": ")[-1]
-                        elif "Running on" in line:
-                            url = line.strip().split(" ")[-1]
-
-                        if url and ("http://" in url or "https://" in url):
-                            server_ready = True
-                            break
-
-        if not server_ready:
-            print("⚠️  无法自动检测服务器地址")
-            url = "http://127.0.0.1:7860"
-            print(f"请尝试访问: {url}")
-
-        # 自动打开浏览器
-        if server_ready:
-            print(f"正在打开浏览器访问: {url}")
+        # 等待服务器就绪（最多 30 秒）
+        print("Waiting for server to be ready...")
+        if wait_for_server("127.0.0.1", port, timeout=30):
+            print(f"Server is ready!")
+            print(f"Opening browser: {url}")
             webbrowser.open(url)
-            print("✅ 浏览器已打开")
+            print("Browser opened.")
         else:
-            print("⚠️  服务器未完全启动，但将继续运行")
-            print("您可以手动在浏览器中访问:", url)
+            print(f"Server did not start in time, try opening manually: {url}")
+            webbrowser.open(url)
 
         print("=" * 60)
-        print("服务器正在运行中...")
-        print("按 Ctrl+C 停止服务器")
+        print("Server is running. Press Ctrl+C to stop.")
         print("=" * 60)
 
-        # 保持脚本运行直到用户按下 Ctrl+C
-        while True:
-            time.sleep(0.5)
-            if process.poll() is not None:
-                print(f"\n服务器已终止，退出码: {process.returncode}")
-                break
+        process.wait()
 
     except KeyboardInterrupt:
-        print("\n\n接收到停止信号")
-        print("正在停止服务器...")
+        print("\nStopping server...")
         try:
             process.terminate()
-            time.sleep(2)
-            if process.poll() is None:
-                process.kill()
-            print("✅ 服务器已停止")
-        except Exception as e:
-            print(f"❌ 停止服务器时出错: {e}")
-    except Exception as e:
-        print(f"❌ 启动服务器失败: {e}")
-        print(f"详细错误: {type(e).__name__}: {e}")
-        import traceback
-        print("\n堆栈跟踪:")
-        print(traceback.format_exc())
-    finally:
-        try:
-            if 'process' in locals() and process.poll() is None:
-                process.terminate()
-                time.sleep(0.5)
-                if process.poll() is None:
-                    process.kill()
+            process.wait(timeout=3)
         except Exception:
-            pass
-        print("\n✅ VeriFlow GUI 启动脚本已结束")
+            process.kill()
+        print("Server stopped.")
+    except Exception as e:
+        import traceback
+        print(f"ERROR: {e}")
+        print(traceback.format_exc())
 
 if __name__ == "__main__":
     main()
