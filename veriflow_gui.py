@@ -13,6 +13,7 @@ import json
 import subprocess
 import time
 import queue
+from collections import deque
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -44,6 +45,9 @@ class GlobalState:
         self.review_stage: int = 0           # which stage is under review
         self.review_approved: bool = False   # True = approved, False = feedback given
         self.rerun_modules: Optional[List[str]] = None  # partial Stage 3 re-run
+        # Log tracking
+        self.current_log_path: Optional[Path] = None
+        self.current_logs: List[str] = []   # all log lines for filter support
 
     def reset(self):
         self.is_running = False
@@ -55,6 +59,8 @@ class GlobalState:
         self.review_pending = False
         self.review_approved = False
         self.rerun_modules = None
+        self.current_log_path = None
+        self.current_logs = []
 
 app_state = GlobalState()
 
@@ -147,13 +153,25 @@ def create_project_structure(project_path: Path, mode: str, freq: int) -> bool:
         print(f"创建项目结构失败: {e}")
         return False
 
+LOG_ICONS: Dict[str, str] = {
+    "info": "ℹ️", "success": "✅", "warning": "⚠️",
+    "error": "❌", "stage": "🔄", "command": "⚡"
+}
+
 def add_log(message: str, log_type: str = "info") -> str:
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    icons = {
-        "info": "ℹ️", "success": "✅", "warning": "⚠️",
-        "error": "❌", "stage": "🔄", "command": "⚡"
-    }
-    return f"[{timestamp}] {icons.get(log_type, 'ℹ️')} {message}"
+    """Generate structured log line for GUI display (matches veriflow_ctl.py format).
+
+    If the message is already formatted (starts with [HH:MM:SS.mmm]),
+    it's returned as-is to avoid double-formatting.
+    """
+    # Check if already formatted (starts with [HH:MM:SS.mmm])
+    import re
+    if re.match(r'^\[\d{2}:\d{2}:\d{2}\.\d{3}\]', message):
+        return message
+
+    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    icon = LOG_ICONS.get(log_type, "ℹ️")
+    return f"[{timestamp}] {icon} {message}"
 
 def scan_generated_files(project_path: Path) -> List[Dict[str, str]]:
     """扫描 workspace 下所有子目录（rtl/sim/docs）的生成文件"""
@@ -208,10 +226,20 @@ def load_project_state(project_path: Path) -> dict:
             pass
     return {}
 
+def _clean_old_run_logs(log_base: Path, keep_n: int = 10) -> None:
+    """Keep only the most recent keep_n run_*.log files."""
+    logs = sorted(log_base.glob("run_*.log"), reverse=True)
+    for old in logs[keep_n:]:
+        try:
+            old.unlink()
+        except Exception:
+            pass
+
 def get_run_log_path(project_path: Path) -> Path:
     """返回带时间戳的日志文件路径，同时创建目录"""
     log_dir = project_path / ".veriflow" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    _clean_old_run_logs(log_dir)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     return log_dir / f"run_{ts}.log"
 
@@ -227,6 +255,181 @@ def load_latest_log(project_path: Path) -> str:
         return logs[0].read_text(encoding="utf-8", errors="replace")
     except Exception:
         return ""
+
+# ============================================================================
+# Claude 流式测试
+# ============================================================================
+
+def _format_stream_event(event) -> str:
+    """把 stream-json 的一行事件格式化成可读文本，返回空串则跳过。"""
+    if not isinstance(event, dict):
+        return str(event)
+    etype = event.get("type", "")
+
+    if etype == "system":
+        subtype = event.get("subtype", "")
+        if subtype == "init":
+            sid   = event.get("session_id", "")
+            tools = event.get("tools", [])
+            # tools 可能是字符串列表，也可能是对象列表
+            tool_names = ", ".join(
+                t if isinstance(t, str) else t.get("name", "?")
+                for t in tools
+            ) if tools else "—"
+            cwd = event.get("cwd", "")
+            return (f"🔧 [系统初始化]\n"
+                    f"   session : {sid}\n"
+                    f"   cwd     : {cwd}\n"
+                    f"   工具    : {tool_names}")
+        return f"🔧 [系统] {subtype}"
+
+    elif etype == "assistant":
+        msg   = event.get("message", {})
+        usage = msg.get("usage", {})
+        parts = []
+        for block in msg.get("content", []):
+            btype = block.get("type", "")
+            if btype == "text":
+                text = block.get("text", "").strip()
+                if text:
+                    parts.append(f"💬 [Claude]\n{text}")
+            elif btype == "tool_use":
+                name = block.get("name", "?")
+                tid  = block.get("id", "")
+                inp  = block.get("input", {})
+                inp_display = {}
+                for k, v in inp.items():
+                    s = str(v)
+                    inp_display[k] = s if len(s) <= 400 else s[:400] + " …(截断)"
+                inp_str = json.dumps(inp_display, ensure_ascii=False, indent=2)
+                parts.append(f"🔨 [工具调用] {name}  (id={tid})\n{inp_str}")
+        if usage:
+            in_tok  = usage.get("input_tokens", 0)
+            out_tok = usage.get("output_tokens", 0)
+            parts.append(f"   📊 tokens: in={in_tok} out={out_tok}")
+        return "\n".join(parts)
+
+    elif etype == "user":
+        # 工具结果回传
+        msg   = event.get("message", {})
+        parts = []
+        for block in msg.get("content", []):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_result":
+                tid      = block.get("tool_use_id", "")
+                is_error = block.get("is_error", False)
+                icon     = "❌" if is_error else "✅"
+                contents = block.get("content", [])
+                # content 可能是字符串或列表
+                if isinstance(contents, str):
+                    text = contents
+                else:
+                    texts = [c.get("text", "") for c in contents
+                             if isinstance(c, dict) and c.get("type") == "text"]
+                    text = "\n".join(texts)
+                if len(text) > 600:
+                    text = text[:600] + " …(截断)"
+                parts.append(f"{icon} [工具结果]  (id={tid})\n{text}")
+        return "\n".join(parts)
+
+    elif etype == "result":
+        subtype  = event.get("subtype", "")
+        cost     = event.get("cost_usd")
+        turns    = event.get("num_turns", "?")
+        duration = event.get("duration_ms", 0)
+        cost_str = f"  💰 ${cost:.4f}" if cost else ""
+        dur_str  = f"  ⏱ {duration/1000:.1f}s" if duration else ""
+        if subtype == "success":
+            result = event.get("result", "")
+            return (f"{'─'*40}\n"
+                    f"✅ [完成]  turns={turns}{cost_str}{dur_str}\n"
+                    f"{result}")
+        else:
+            error = event.get("error", event.get("result", ""))
+            return (f"{'─'*40}\n"
+                    f"❌ [失败]{cost_str}{dur_str}: {error}")
+
+    # 其他未知事件：原样显示，方便排查新格式
+    return f"[{etype}] {json.dumps(event, ensure_ascii=False)[:300]}"
+
+
+def stream_claude_test(prompt_text: str, cli_path_override: str):
+    """
+    生成器函数：运行 claude --print --output-format stream-json，
+    实时 yield 累积日志字符串给 Gradio Textbox。
+    """
+    import shutil
+
+    cfg      = load_config()
+    cli_path = (cli_path_override or "").strip() or cfg["claude"]["cli_path"].strip()
+
+    # 自动检测
+    if not cli_path:
+        for name in ["claude", "claude.cmd", "claude.bat", "claude.exe"]:
+            found = shutil.which(name)
+            if found:
+                cli_path = found
+                break
+
+    if not cli_path:
+        yield "❌ 未找到 Claude CLI。\n请在「Agent 配置 → Claude」页填入路径后再试。"
+        return
+
+    if not prompt_text.strip():
+        yield "⚠️ 请先输入测试 Prompt。"
+        return
+
+    cmd = [
+        cli_path,
+        "--print",
+        "--dangerously-skip-permissions",
+        "--verbose",
+        "--output-format", "stream-json",
+    ]
+
+    log = f"▶ 命令: {' '.join(cmd)}\n{'─'*60}\n"
+    yield log
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        proc.stdin.write(prompt_text)
+        proc.stdin.close()
+
+        for raw in proc.stdout:
+            raw = raw.rstrip()
+            if not raw:
+                continue
+            try:
+                event     = json.loads(raw)
+                formatted = _format_stream_event(event)
+                if formatted:
+                    log += formatted + "\n\n"
+                    yield log
+            except json.JSONDecodeError:
+                log += raw + "\n"
+                yield log
+            except Exception as e:
+                log += f"[解析错误 {e}] {raw[:200]}\n"
+                yield log
+
+        proc.wait()
+        log += f"{'─'*60}\n⏹ 进程退出，exit code = {proc.returncode}"
+        yield log
+
+    except FileNotFoundError:
+        yield log + f"\n❌ 找不到可执行文件: {cli_path}"
+    except Exception as exc:
+        yield log + f"\n❌ 异常: {exc}"
+
 
 # ============================================================================
 # UI 构建
@@ -378,9 +581,11 @@ def create_ui() -> gr.Blocks:
 ├── requirement.md     ← 设计需求
 ├── .veriflow/         ← 配置文件
 └── workspace/
-    ├── docs/          ← 规格文档
-    ├── rtl/           ← 生成的 RTL
-    └── sim/           ← 仿真文件
+    ├── docs/          ← 当前工作文档（spec / timing / report）
+    ├── rtl/           ← 当前 RTL
+    ├── tb/            ← 当前测试台
+    ├── sim/           ← 当前仿真输出
+    └── stages/        ← 按 stage 归档的扁平结果目录
 ```
                             """)
 
@@ -548,6 +753,32 @@ def create_ui() -> gr.Blocks:
                                 save_compat_btn    = gr.Button("💾 保存兼容接口配置", variant="primary")
                                 compat_save_status = gr.Textbox(label="", value="", interactive=False, scale=3)
 
+                        with gr.TabItem("🧪 流式测试"):
+                            gr.Markdown(
+                                "### Claude stream-json 流式测试\n"
+                                "验证 `--output-format stream-json` 模式下工具调用是否实时可见。"
+                            )
+                            test_cli_path = gr.Textbox(
+                                label="Claude CLI 路径（留空则自动检测）",
+                                placeholder="留空 = 使用 Agent 配置中的路径",
+                                value="",
+                            )
+                            test_prompt = gr.TextArea(
+                                label="测试 Prompt",
+                                value="请用 Write 工具在当前目录创建一个名为 hello.txt 的文件，内容为 'hello from stream-json test'，然后用 Read 工具读取并确认内容。",
+                                lines=4,
+                            )
+                            with gr.Row():
+                                test_run_btn   = gr.Button("▶ 运行测试", variant="primary", scale=2)
+                                test_clear_btn = gr.Button("🗑 清空", scale=1)
+                            test_log = gr.Textbox(
+                                label="实时输出（工具调用可见）",
+                                value="",
+                                lines=25,
+                                max_lines=50,
+                                interactive=False,
+                            )
+
                 # ─── 页面 4：运行流水线 ──────────────────────────────────────
                 with gr.Column(visible=False) as page_pipeline:
                     gr.HTML('<div class="page-title">▶️ 运行流水线</div>')
@@ -559,6 +790,11 @@ def create_ui() -> gr.Blocks:
                                 label="执行模式（在「项目管理」中设置）",
                                 value="quick", interactive=False
                             )
+                            max_workers_slider = gr.Slider(
+                                label="S3 并行 Worker 数",
+                                minimum=1, maximum=8, step=1, value=4,
+                                info="Stage 3 同时启动的 Claude 子进程数量"
+                            )
                             with gr.Row():
                                 pause_btn  = gr.Button("⏸️ 暂停", visible=False)
                                 resume_btn = gr.Button("▶️ 继续", visible=False)
@@ -569,12 +805,12 @@ def create_ui() -> gr.Blocks:
                             with gr.Row():
                                 stage1_btn  = gr.Button("S1: 架构规格", size="sm", variant="secondary")
                                 stage15_btn = gr.Button("S1.5: 微架构", size="sm", variant="secondary")
-                            with gr.Row():
+                            with gr.Row(visible=False) as stage2_row:
                                 stage2_btn  = gr.Button("S2: 时序模型", size="sm", variant="secondary")
                             with gr.Row():
                                 stage3_btn  = gr.Button("S3: RTL生成",  size="sm", variant="secondary")
-                                stage35_btn = gr.Button("S3.5: 静态分析", size="sm", variant="secondary")
-                            with gr.Row():
+                                stage35_btn = gr.Button("S3.5: Lint+分析", size="sm", variant="secondary")
+                            with gr.Row(visible=False) as stage45_row:
                                 stage4_btn  = gr.Button("S4: 仿真验证", size="sm", variant="secondary")
                                 stage5_btn  = gr.Button("S5: 综合KPI",  size="sm", variant="secondary")
 
@@ -1039,6 +1275,14 @@ def create_ui() -> gr.Blocks:
             outputs=[compat_save_status]
         )
 
+        # ── 流式测试 ──────────────────────────────────────────────────────────
+        test_run_btn.click(
+            fn=stream_claude_test,
+            inputs=[test_prompt, test_cli_path],
+            outputs=[test_log],
+        )
+        test_clear_btn.click(fn=lambda: "", outputs=[test_log])
+
         # ======================================================================
         # ======================================================================
         # 辅助：获取 stage 审查内容（文件预览）
@@ -1075,7 +1319,7 @@ def create_ui() -> gr.Blocks:
         # ======================================================================
         # 运行流水线（Generator 流式）— 逐 stage + Review Gate
         # ======================================================================
-        def run_pipeline_stream(working_dir, project_name, mode, use_mock_val, stage_to_run=None):
+        def run_pipeline_stream(working_dir, project_name, mode, use_mock_val, max_workers_val=4, stage_to_run=None):
             """
             Yields 8 items per update:
               (log_text, stage_label, progress, run_btn, stop_btn,
@@ -1127,17 +1371,27 @@ def create_ui() -> gr.Blocks:
 
             project_path = Path(working_dir) / project_name
             log_path = get_run_log_path(project_path)
-            logs = []
+            app_state.current_log_path = log_path
+            app_state.current_logs = []
+
+            _log_file = open(log_path, "a", encoding="utf-8", buffering=1)  # line-buffered
+            _display_buf: deque = deque(maxlen=2000)
 
             def emit(msg, log_type="info"):
                 line = add_log(msg, log_type)
-                logs.append(line)
+                app_state.current_logs.append(line)
+                _display_buf.append(line)
                 try:
-                    with open(log_path, "a", encoding="utf-8") as _f:
-                        _f.write(line + "\n")
+                    _log_file.write(line + "\n")
                 except Exception:
                     pass
-                return "\n".join(logs)
+                return "\n".join(_display_buf)
+
+            def _close_log_file():
+                try:
+                    _log_file.close()
+                except Exception:
+                    pass
 
             def _save_state(status, progress, stage):
                 save_project_state(project_path, {
@@ -1151,8 +1405,9 @@ def create_ui() -> gr.Blocks:
 
             # Stage 进度映射
             stage_progress = {
-                1:   {"start": 5,  "done": 20, "label": "Stage 1: 架构规格"},
-                2:   {"start": 20, "done": 38, "label": "Stage 2: 时序模型"},
+                1:   {"start": 5,  "done": 18, "label": "Stage 1: 架构规格"},
+                1.5: {"start": 18, "done": 22, "label": "Stage 1.5: 微架构设计"},
+                2:   {"start": 22, "done": 38, "label": "Stage 2: 时序模型"},
                 2.5: {"start": 38, "done": 42, "label": "Stage 2.5: 人工审查"},
                 3:   {"start": 42, "done": 65, "label": "Stage 3: RTL生成"},
                 3.5: {"start": 65, "done": 75, "label": "Stage 3.5: 静态分析"},
@@ -1167,8 +1422,14 @@ def create_ui() -> gr.Blocks:
                 "Executing Stage 3 Module":   (None, None),   # dynamic
                 "stage 3 module":             (None, None),   # dynamic
                 "stage 3 complete":           (65,  "Stage 3: 完成"),
-                "Executing Stage 3.5":        (66,  "Stage 3.5: 静态分析"),
+                "Executing Stage 3.5":        (66,  "Stage 3.5: Lint + 静态分析"),
+                "── Phase 1: Lint":           (67,  "Stage 3.5: Lint 检查"),
+                "── Phase 2: Static":         (72,  "Stage 3.5: 静态分析"),
+                "stage 35 complete":          (75,  "Stage 3.5: 完成"),
                 "stage 3.5 complete":         (75,  "Stage 3.5: 完成"),
+                "Executing Stage 3.6":        (38,  "Stage 3.6: 人工审查"),
+                "Executing Stage 36":         (38,  "Stage 36: 人工审查"),
+                "stage 36 complete":          (42,  "Stage 36: 完成"),
                 "Executing Stage 4":          (76,  "Stage 4: 仿真验证"),
                 "stage 4 complete":           (90,  "Stage 4: 完成"),
                 "Executing Stage 5":          (91,  "Stage 5: 综合KPI"),
@@ -1178,15 +1439,20 @@ def create_ui() -> gr.Blocks:
             }
 
             cur_prog, cur_stage = 0, "启动中..."
-            yield _yield(emit("🚀 启动流水线 (模式: {})".format(mode), "stage"),
-                         cur_stage, cur_prog,
-                         run_vis=False, stop_vis=True, review_vis=False)
+            if stage_to_run is not None:
+                yield _yield(emit(f"▶ 单独执行 Stage {stage_to_run} (模式: {mode})", "stage"),
+                             cur_stage, cur_prog,
+                             run_vis=False, stop_vis=True, review_vis=False)
+            else:
+                yield _yield(emit("🚀 启动流水线 (模式: {})".format(mode), "stage"),
+                             cur_stage, cur_prog,
+                             run_vis=False, stop_vis=True, review_vis=False)
 
             # 确定要执行的 stage 列表
             mode_stages_map = {
-                "quick":      [1, 3, 4],
-                "standard":   [1, 2, 3, 3.5, 4],
-                "enterprise": [1, 2, 3, 3.5, 4, 5],
+                "quick":      [1, 1.5, 3, 3.5],
+                "standard":   [1, 1.5, 2, 3, 3.5, 4, 5],
+                "enterprise": [1, 1.5, 2, 3, 3.5, 4, 5],
             }
             if stage_to_run is not None:
                 all_stages = [stage_to_run]
@@ -1211,7 +1477,8 @@ def create_ui() -> gr.Blocks:
                 # Build command
                 cmd = [sys.executable, "-u", ctl_script, "run",
                        "--mode", mode, "-d", project_dir,
-                       "--stages", str(stage_num)]
+                       "--stages", str(stage_num),
+                       "--workers", str(int(max_workers_val))]
                 if feedback_path.exists():
                     cmd.extend(["--feedback", str(feedback_path)])
                     yield _yield(emit(f"📝 使用反馈: {feedback_path.name}", "info"),
@@ -1285,6 +1552,7 @@ def create_ui() -> gr.Blocks:
                                      "❌ 失败", cur_prog,
                                      run_vis=True, stop_vis=False, review_vis=False)
                         app_state.is_running = False
+                        _close_log_file()
                         return
 
                 if stage_failed:
@@ -1294,11 +1562,19 @@ def create_ui() -> gr.Blocks:
                                  cur_stage, cur_prog,
                                  run_vis=True, stop_vis=False, review_vis=False)
                     app_state.is_running = False
+                    _close_log_file()
                     return
 
-                # ── Review Gate ──────────────────────────────────────────────
+                # ── Review Gate（只对有实质产物的 stage 弹出）────────────────
                 cur_prog = s_info["done"]
                 _save_state("review", cur_prog, cur_stage)
+
+                # 不需要人工审查的 stage 直接推进
+                REVIEW_STAGES = {1, 3}
+                if stage_num not in REVIEW_STAGES:
+                    stage_i += 1
+                    continue
+
                 review_content = _get_review_content(project_path, stage_num)
 
                 # For Stage 3: read module names from spec for checkbox selection
@@ -1353,10 +1629,14 @@ def create_ui() -> gr.Blocks:
             # ── All stages complete ──────────────────────────────────────────
             app_state.is_running = False
             app_state.process = None
-            if app_state.is_running is False and stage_i >= len(all_stages):
+            if stage_i >= len(all_stages):
                 cur_prog, cur_stage = 100, "✅ 完成"
                 _save_state("completed", cur_prog, cur_stage)
-                yield _yield(emit("✅ 流水线全部完成！", "success"),
+                if stage_to_run is not None:
+                    done_msg = f"✅ Stage {stage_to_run} 执行完成"
+                else:
+                    done_msg = "✅ 流水线全部完成！"
+                yield _yield(emit(done_msg, "success"),
                              cur_stage, cur_prog,
                              run_vis=True, stop_vis=False, review_vis=False)
             else:
@@ -1364,9 +1644,10 @@ def create_ui() -> gr.Blocks:
                 yield _yield(emit("⏹ 流水线已停止", "warning"),
                              cur_stage, cur_prog,
                              run_vis=True, stop_vis=False, review_vis=False)
+            _close_log_file()
         run_btn.click(
             fn=run_pipeline_stream,
-            inputs=[working_dir_input, project_dropdown, mode_dropdown, use_mock],
+            inputs=[working_dir_input, project_dropdown, mode_dropdown, use_mock, max_workers_slider],
             outputs=[log_output, current_stage, progress_bar, run_btn, stop_btn,
                      review_panel, review_preview, modules_checkboxes]
         )
@@ -1376,11 +1657,11 @@ def create_ui() -> gr.Blocks:
                           review_panel, review_preview, modules_checkboxes]
 
         def _mk_stage_runner(s):
-            def _fn(wd, proj, mode, mock):
-                yield from run_pipeline_stream(wd, proj, mode, mock, stage_to_run=s)
+            def _fn(wd, proj, mode, mock, workers):
+                yield from run_pipeline_stream(wd, proj, mode, mock, workers, stage_to_run=s)
             return _fn
 
-        _stage_inputs = [working_dir_input, project_dropdown, mode_dropdown, use_mock]
+        _stage_inputs = [working_dir_input, project_dropdown, mode_dropdown, use_mock, max_workers_slider]
 
         stage1_btn .click(fn=_mk_stage_runner(1),   inputs=_stage_inputs, outputs=_stage_outputs)
         stage15_btn.click(fn=_mk_stage_runner(1.5), inputs=_stage_inputs, outputs=_stage_outputs)
@@ -1389,6 +1670,17 @@ def create_ui() -> gr.Blocks:
         stage35_btn.click(fn=_mk_stage_runner(3.5), inputs=_stage_inputs, outputs=_stage_outputs)
         stage4_btn .click(fn=_mk_stage_runner(4),   inputs=_stage_inputs, outputs=_stage_outputs)
         stage5_btn .click(fn=_mk_stage_runner(5),   inputs=_stage_inputs, outputs=_stage_outputs)
+
+        # 模式切换 → 动态显示/隐藏阶段按钮
+        def _update_stage_buttons(mode):
+            show = mode in ("standard", "enterprise")
+            return gr.update(visible=show), gr.update(visible=show)
+
+        mode_dropdown.change(
+            fn=_update_stage_buttons,
+            inputs=[mode_dropdown],
+            outputs=[stage2_row, stage45_row],
+        )
 
         # 停止
         def stop_pipeline():
@@ -1400,8 +1692,15 @@ def create_ui() -> gr.Blocks:
                 app_state.process = None
             app_state.is_running    = False
             app_state.review_pending = False
+            msg_line = add_log("⏹️ 用户终止了流水线", "warning")
+            if app_state.current_log_path:
+                try:
+                    with open(app_state.current_log_path, "a", encoding="utf-8") as _f:
+                        _f.write(msg_line + "\n")
+                except Exception:
+                    pass
             return (
-                add_log("⏹️ 用户终止了流水线", "warning"),
+                msg_line,
                 "已停止", int(app_state.progress),
                 gr.update(visible=True), gr.update(visible=False),
                 gr.update(visible=False), gr.update(), gr.update(),
@@ -1450,6 +1749,25 @@ def create_ui() -> gr.Blocks:
 
         # 清除日志
         clear_logs_btn.click(fn=lambda: "", outputs=[log_output])
+
+        # 日志过滤器
+        def _filter_logs(level: str) -> str:
+            if not app_state.current_logs:
+                return ""
+            if level == "全部":
+                lines = app_state.current_logs
+            else:
+                icon_map = {"信息": "ℹ️", "成功": "✅", "警告": "⚠️",
+                            "错误": "❌", "阶段": "🔄"}
+                icon = icon_map.get(level, "")
+                lines = [l for l in app_state.current_logs if icon in l]
+            return "\n".join(lines[-2000:])
+
+        log_filter.change(
+            fn=_filter_logs,
+            inputs=[log_filter],
+            outputs=[log_output],
+        )
 
         # ======================================================================
         # 文件预览
