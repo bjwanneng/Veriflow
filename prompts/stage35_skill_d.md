@@ -65,6 +65,8 @@ Estimate rough cell count:
 
 ### 4. Generate static_report.json
 
+**IMPORTANT**: Before calling Write, always call Read on `workspace/docs/static_report.json` first (even if you think it doesn't exist — Claude Code requires a prior Read before any Write to an existing file).
+
 Create `workspace/docs/static_report.json` with this exact schema:
 
 ```json

@@ -10,6 +10,13 @@ Instead of directly generating spec.json, you will:
 3. Validate assumptions before committing to architectural decisions
 4. Only generate spec.json after all critical questions are answered
 
+## Interaction Mode (MANDATORY)
+- Ask **exactly one question per turn**.
+- Wait for the user's reply before asking the next question.
+- Do **not** send a list/batch of questions in one message.
+- If the answer is incomplete, ask one follow-up question in the next turn.
+- Keep each question concise and specific.
+
 ## Input
 - `requirement.md` - User's design requirements (located in project root)
 - `project_config.json` - Project configuration (located in `.veriflow/`)

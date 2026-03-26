@@ -37,9 +37,9 @@ Both `iverilog` and `yosys` fall back to mock mode if unavailable.
 | 4 | Simulation Loop | lint + sim, auto-retry with Debugger | all |
 | 5 | Yosys Synthesis + KPI | `workspace/docs/synth_report.json` | enterprise |
 
-Quick mode: stages 1 → 3 → 4 (lint only).
-Standard mode: stages 1 → 2 → 2.5 → 3 → 3.5 → 4.
-Enterprise mode: all stages including 5.
+Quick mode: stages 1 → 1.5 → 3 → 3.5 (lint/static, no simulation).
+Standard mode: stages 1 → 1.5 → 2 → 3 → 3.5 → 4 → 5.
+Enterprise mode: same as standard (reserved for future extensions).
 
 ## Project Directory Layout (per design)
 
@@ -50,23 +50,31 @@ Each design project has this structure (created by the pipeline):
 ├── requirement.md                  # Input: design requirements (user-authored)
 ├── .veriflow/
 │   ├── project_config.json         # Mode, style, iteration limits
-│   └── pipeline_state.json         # Stage completion tracking
+│   ├── pipeline_state.json         # Stage completion tracking
+│   ├── pipeline_events.jsonl       # Stage start/complete/fail event stream
+│   ├── kpi.json                    # KPITracker metrics (per run)
+│   └── logs/
+│       ├── run_<ts>.log            # Full plain-text run log (latest 10 kept)
+│       ├── run_<ts>.jsonl          # Structured JSONL log (one entry per _log() call)
+│       └── linter_iter_<N>.log     # Per-iteration iverilog output (Stage 3.5)
 └── workspace/
-    ├── docs/                       # Spec, timing model, reports, *.done sentinels
-    ├── rtl/                        # Generated Verilog-2005 RTL (one module per file)
-    ├── tb/                         # Generated testbenches
-    └── sim/                        # Simulation outputs, VCD waveforms
+    ├── docs/                       # Current spec, timing model, reports, *.done sentinels
+    ├── rtl/                        # Current Verilog-2005 RTL
+    ├── tb/                         # Current testbenches
+    ├── sim/                        # Current simulation outputs
+    └── stages/                     # Per-stage flat artifact snapshots (changed files only)
 ```
 
 ## Architecture
 
-**`veriflow_ctl.py`** (1925 lines) — the entire orchestration logic lives here:
-- `VeriFlowController` class drives the state machine
-- Each stage is a method that calls `_run_claude_worker(prompt_file, context)` via subprocess
+**`veriflow_ctl.py`** (~2500 lines) — the entire orchestration logic lives here:
+- `run_project()` drives the while-loop state machine; stage failures route through `call_supervisor()`
+- Each stage is a function that calls `call_claude(prompt_file, context)` via subprocess
 - Stage completion is tracked via `workspace/docs/stage*.done` sentinel files
 - Testbench anti-tampering: MD5 snapshots are taken before/after Debugger runs; testbench is restored if modified
+- Structured logging: `_log()` writes to stdout and appends JSONL entries; `_emit_stage_event()` writes `pipeline_events.jsonl`
 
-**`veriflow_gui.py`** (1486 lines) — Tkinter GUI wrapper around `veriflow_ctl.py`.
+**`veriflow_gui.py`** (~1600 lines) — Gradio GUI wrapper around `veriflow_ctl.py`.
 
 **`prompts/`** — Markdown prompt files injected into each Claude worker call:
 - `stage1_architect.md` — interactive Q&A to produce `spec.json`
@@ -74,6 +82,7 @@ Each design project has this structure (created by the pipeline):
 - `stage3_coder.md` — generates RTL from spec + timing model
 - `stage35_skill_d.md` — static quality analysis
 - `stage4_debugger.md` — error correction given lint/sim output
+- `supervisor.md` — routing decision when a stage fails
 
 **`tools/`** — ACI shell scripts:
 - `run_lint.sh` — wraps `iverilog -Wall`

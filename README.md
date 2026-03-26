@@ -147,18 +147,30 @@ my_project/
 ├── requirement.md              # 设计需求（输入）
 ├── .veriflow/
 │   ├── project_config.json     # 项目配置
-│   └── pipeline_state.json     # 流水线状态（含各阶段决策记录）
+│   ├── pipeline_state.json     # 流水线状态（含各阶段决策记录）
+│   ├── pipeline_events.jsonl   # 阶段级结构化事件流（start/complete/fail）
+│   ├── kpi.json                # KPI 指标（每次运行）
+│   └── logs/
+│       ├── run_<ts>.log        # 全量纯文本日志（最近 10 个，自动清理）
+│       ├── run_<ts>.jsonl      # 结构化 JSONL 日志（每条 _log() 调用一行）
+│       └── linter_iter_<N>.log # 每轮 lint 的原始输出（Stage 3.5）
 └── workspace/
     ├── docs/
-    │   ├── spec.json           # 架构规格（Stage 1 输出）
-    │   ├── timing_model.yaml   # 行为断言 + 激励（Stage 2 输出）
-    │   ├── static_report.json  # 静态分析报告（Stage 3.5 输出）
-    │   ├── synth_report.json   # 综合报告（Stage 5 输出）
+    │   ├── spec.json           # 当前架构规格（Stage 1 输出）
+    │   ├── micro_arch.md       # 当前微架构文档（Stage 1.5 输出）
+    │   ├── timing_model.yaml   # 当前行为断言 + 激励（Stage 2 输出）
+    │   ├── static_report.json  # 当前静态分析报告（Stage 3.5 输出）
+    │   ├── synth_report.json   # 当前综合报告（Stage 5 输出）
     │   └── stage*.done         # 阶段完成哨兵文件
     ├── rtl/
-    │   └── *.v                 # RTL 源文件（Stage 3 输出）
-    └── tb/
-        └── tb_*.v              # 测试台（Stage 2 输出，只读）
+    │   └── *.v                 # 当前 RTL 源文件
+    ├── tb/
+    │   └── tb_*.v              # 当前测试台
+    ├── sim/
+    │   └── *                   # 当前仿真输出
+    └── stages/
+        └── <stage_name>/
+            # 每个 stage 的扁平归档目录，只保存该 stage 新增或修改的文件
 ```
 
 ## 质量门控策略
@@ -188,6 +200,18 @@ my_project/
 | Yosys | 综合（Enterprise） | 否 |
 
 ## 更新日志
+
+### v8.4.1 (2026-03-26) — 日志系统全面优化
+- **修复 O(N²) 性能瓶颈**：GUI `emit()` 改用 `deque(maxlen=2000)` 环形缓冲，`join` 从 O(N) 降为 O(2000)
+- **单文件句柄**：`emit()` 不再每行 open/close，改为行缓冲持久句柄，大幅减少 syscall
+- **跨 run 污染修复**：`run_project()` 开头调用 `clear_error_logs()`，Supervisor 不再读到上次运行的错误
+- **per-iteration lint 日志**：`run_lint()` 新增 `log_name` 参数；Stage 3.5 每轮写 `linter_iter_N.log`，便于对比修复效果
+- **结构化 JSONL 日志**：每条 `_log()` 调用同步追加到 `run_<ts>.jsonl`
+- **阶段事件流**：`_emit_stage_event()` 写 `pipeline_events.jsonl`（stage_start / stage_complete / stage_fail）
+- **日志轮转**：`run_*.log` 最多保留 10 个，旧文件自动清理
+- **stop 写磁盘**：`stop_pipeline()` 终止记录写入磁盘日志
+- **日志过滤器激活**：GUI `log_filter` Dropdown 现已绑定 `_filter_logs()` 事件
+- **消除重复定义**：`LOG_ICONS` 常量提取为模块级，`_log()` 和 `add_log()` 共用
 
 ### v8.3.1 (2026-03-24) — 代码质量优化
 - **接入 `verilog_flow/` 支持库**：之前定义了但未使用，现已全部接入
@@ -220,4 +244,4 @@ MIT License — 详见 LICENSE 文件
 
 ---
 
-**版本**: 8.3.1 | **更新日期**: 2026-03-24
+**版本**: 8.4.1 | **更新日期**: 2026-03-26
