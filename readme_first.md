@@ -133,6 +133,23 @@ Supervisor hint 存于 `.veriflow/supervisor_hint.md`，由 Stage 3 和 Stage 4 
 
 ## 常用命令
 
+### 启动 GUI
+```bash
+# 方法 1: 使用 Python 脚本（推荐，跨平台）
+python run_veriflow.py
+
+# 方法 2: Windows 批处理文件
+run_veriflow.bat
+
+# 方法 3: macOS/Linux Shell 脚本
+chmod +x run_veriflow.sh
+./run_veriflow.sh
+
+# 方法 4: 直接启动（不自动打开浏览器）
+python veriflow_gui.py
+```
+
+### 运行流水线
 ```bash
 # 运行流水线（标准模式）
 python veriflow_ctl.py run --mode standard -d ./my_project
