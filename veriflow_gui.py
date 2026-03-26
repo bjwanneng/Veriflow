@@ -242,10 +242,20 @@ def _rich_log_to_html(message: str, log_type: str = "info") -> str:
         # 简化 HTML，只保留 body 内容
         body_match = re.search(r'<body>(.*?)</body>', html_output, re.DOTALL)
         if body_match:
-            content = body_match.group(1)
-            # 替换背景色为深色主题
+            content = body_match.group(1).strip()
+            # 替换所有可能的黑色/白色背景为深色主题
             content = content.replace('background-color: white', 'background-color: #0d1117')
+            content = content.replace('background-color:#ffffff', 'background-color:#0d1117')
+            content = content.replace('background-color: #ffffff', 'background-color: #0d1117')
             content = content.replace('color: black', 'color: #f0f6fc')
+            content = content.replace('color:#000000', 'color:#f0f6fc')
+            content = content.replace('color: #000000', 'color:#f0f6fc')
+            # 去掉 pre 标签的 margin/padding，避免行间空格
+            content = re.sub(
+                r'<pre\s+style="([^"]*)"',
+                lambda m: f'<pre style="{m.group(1)};margin:0;padding:0;line-height:1.4"',
+                content
+            )
             return content
         return f'<span style="color:#58a6ff">{message}</span>'
 
@@ -954,7 +964,7 @@ def create_ui() -> gr.Blocks:
                                 clear_logs_btn = gr.Button("🗑️ 清除", size="sm", scale=1)
                             log_output = gr.HTML(
                                 label="",
-                                value="<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.6;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'>"
+                                value="<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.4;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'>"
                                        "<div style='color:#8b949e'>等待启动流水线...</div></div>",
                                 elem_id="log_output"
                             )
@@ -1519,10 +1529,10 @@ def create_ui() -> gr.Blocks:
                 except Exception:
                     pass
                 # 构建完整的 HTML 日志显示
-                html_output = "<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.6;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'>"
+                html_output = "<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.4;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'>"
                 if len(app_state.current_logs_html) > 0:
                     for html_line in app_state.current_logs_html:
-                        html_output += html_line + "<br>"
+                        html_output += f"<div style='margin:0;padding:0'>{html_line}</div>"
                 else:
                     html_output += "<div style='color:#8b949e'>等待启动流水线...</div>"
                 html_output += "</div>"
@@ -1756,10 +1766,10 @@ def create_ui() -> gr.Blocks:
                         break
                     time.sleep(0.5)
                     # 构建当前 HTML 日志用于显示
-                    html_output = "<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.6;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'>"
+                    html_output = "<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.4;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'>"
                     if len(app_state.current_logs_html) > 0:
                         for html_line in app_state.current_logs_html:
-                            html_output += html_line + "<br>"
+                            html_output += f"<div style='margin:0;padding:0'>{html_line}</div>"
                     else:
                         html_output += "<div style='color:#8b949e'>等待启动流水线...</div>"
                     html_output += "</div>"
@@ -1862,10 +1872,10 @@ def create_ui() -> gr.Blocks:
                 except Exception:
                     pass
             # 构建完整的 HTML 日志显示
-            html_output = "<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.6;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'>"
+            html_output = "<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.4;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'>"
             if len(app_state.current_logs_html) > 0:
                 for html_line in app_state.current_logs_html:
-                    html_output += html_line + "<br>"
+                    html_output += f"<div style='margin:0;padding:0'>{html_line}</div>"
             else:
                 html_output += "<div style='color:#8b949e'>等待启动流水线...</div>"
             html_output += "</div>"
@@ -1921,7 +1931,7 @@ def create_ui() -> gr.Blocks:
         def _clear_logs():
             app_state.current_logs = []
             app_state.current_logs_html = []
-            html_output = "<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.6;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'>"
+            html_output = "<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.4;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'>"
             html_output += "<div style='color:#8b949e'>日志已清除...</div>"
             html_output += "</div>"
             return html_output
@@ -1931,7 +1941,7 @@ def create_ui() -> gr.Blocks:
         # 日志过滤器
         def _filter_logs(level: str) -> str:
             if not app_state.current_logs:
-                return "<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.6;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'><div style='color:#8b949e'>等待启动流水线...</div></div>"
+                return "<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.4;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'><div style='color:#8b949e'>等待启动流水线...</div></div>"
             if level == "全部":
                 filtered_indices = list(range(len(app_state.current_logs)))
             else:
@@ -1940,7 +1950,7 @@ def create_ui() -> gr.Blocks:
                 icon = icon_map.get(level, "")
                 filtered_indices = [i for i, l in enumerate(app_state.current_logs) if icon in l]
             # 构建过滤后的 HTML
-            html_output = "<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.6;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'>"
+            html_output = "<div style='font-family:Consolas,monospace;font-size:14px;line-height:1.4;padding:8px;background:#0d1117;color:#f0f6fc;min-height:400px;border-radius:8px;overflow:auto;'>"
             if filtered_indices:
                 for idx in filtered_indices[-2000:]:
                     html_output += app_state.current_logs_html[idx] + "<br>"
