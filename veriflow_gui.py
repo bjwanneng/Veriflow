@@ -1604,7 +1604,7 @@ def create_ui() -> gr.Blocks:
                     if not app_state.is_running:
                         break
                     time.sleep(0.5)
-                    yield _yield("\n".join(logs),
+                    yield _yield("\n".join(_display_buf),
                                  f"⏸ 审查 Stage {stage_num}", cur_prog)
 
                 # ── Review decision ──────────────────────────────────────────
