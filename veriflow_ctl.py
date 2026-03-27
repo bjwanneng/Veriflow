@@ -1290,6 +1290,30 @@ Do NOT wait for the user to re-explain the task — begin executing on the trigg
 """
     kickoff_content = autostart_header + kickoff_content
 
+    # ── Inject target frequency constraint ───────────────────────────────────
+    target_freq_mhz = 100  # default
+    config_path = project_dir / ".veriflow" / "project_config.json"
+    if config_path.exists():
+        try:
+            cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            target_freq_mhz = cfg.get("target_frequency_mhz", 100)
+        except Exception:
+            pass
+
+    freq_hint = f"""
+## ⚠️ Pipeline Configuration Constraint
+
+**Target Frequency: {target_freq_mhz} MHz** (from project_config.json — MUST be used in spec.json)
+
+- `spec.json::target_frequency_mhz` 必须设置为 **{target_freq_mhz}**
+- `spec.json::target_kpis::frequency_mhz` 必须设置为 **{target_freq_mhz}**
+- `critical_path_budget` 必须按公式计算：`floor(1000 / {target_freq_mhz} / 0.1)` = {int(1000 / target_freq_mhz / 0.1)}
+
+---
+
+"""
+    kickoff_content = autostart_header + freq_hint + (PROMPTS_DIR / "stage1_architect.md").read_text(encoding="utf-8")
+
     kickoff_content += f"""
 
 ---
@@ -1678,6 +1702,24 @@ def cmd_validate(project_dir: Path, stage: int) -> int:
                     pass  # jsonschema not installed — skip silently
                 except Exception as je:
                     errors.append(f"SCHEMA: {je}")
+
+            # Frequency consistency check: spec.json must match project_config.json
+            config_path = project_dir / ".veriflow" / "project_config.json"
+            if config_path.exists() and paths["spec"].exists():
+                try:
+                    cfg = json.loads(config_path.read_text(encoding="utf-8"))
+                    expected_freq = cfg.get("target_frequency_mhz")
+                    if expected_freq:
+                        spec_data = json.loads(paths["spec"].read_text(encoding="utf-8"))
+                        spec_freq = spec_data.get("target_frequency_mhz") or \
+                                    spec_data.get("target_kpis", {}).get("frequency_mhz")
+                        if spec_freq and int(spec_freq) != int(expected_freq):
+                            errors.append(
+                                f"FREQ_MISMATCH: spec.json target_frequency_mhz={spec_freq} "
+                                f"!= project_config.json target_frequency_mhz={expected_freq}"
+                            )
+                except Exception:
+                    pass
 
     elif stage == 2:
         timing = paths["docs"] / "timing_model.yaml"

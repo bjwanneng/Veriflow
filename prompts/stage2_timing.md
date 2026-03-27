@@ -67,6 +67,12 @@ Create `workspace/tb/tb_<design_name>.v` that provides **full functional coverag
 5. Track a `fail_count` integer; print `ALL TESTS PASSED` or `FAILED: N assertion(s) failed`
 6. Call `$finish` after all test cases complete
 7. Use `$dumpfile` / `$dumpvars` for waveform capture
+8. **For serial/baud-rate-based designs**: calculate the exact number of clock cycles to wait
+   for each operation. Formula: `wait_cycles = divisor_value × oversampling_factor × frame_bits`
+   - Example: divisor=0x1B (27), oversampling=16, 10-bit frame → wait = 27×16×10 = 4320 cycles
+   - NEVER use a fixed small constant (e.g., 1000) for timing-sensitive operations
+9. **Every scenario that writes data must also read it back** and assert the expected value
+   with a `fail_count` check — informational `$display` without assertion is NOT sufficient
 
 **Minimum scenario count**: at least `max(3, number of functional requirements in spec)`
 
@@ -137,6 +143,21 @@ if (o_done !== 1'b1) begin
     fail_count = fail_count + 1;
 end else begin
     $display("PASS: o_done asserted correctly");
+end
+```
+
+**Baud-rate wait pattern (for serial designs):**
+```verilog
+// Serial TX wait — CORRECT: compute from baud divisor
+// divisor = dll + (dlm<<8), oversampling=16, frame=10 bits
+// wait_cycles = (divisor+1) * 16 * 10 + margin
+integer wait_cycles;
+wait_cycles = (27 + 1) * 16 * 10 + 100; // = 4580 cycles
+repeat(wait_cycles) @(posedge clk);
+// NOW check received data
+if (rx_data !== 8'hA5) begin
+    $display("FAIL: TX loopback data mismatch, got 0x%02X", rx_data);
+    fail_count = fail_count + 1;
 end
 ```
 

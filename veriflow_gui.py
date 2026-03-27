@@ -1158,7 +1158,10 @@ def create_ui() -> gr.Blocks:
         # ======================================================================
         def create_project(working_dir, project_name, mode, freq_val):
             if not project_name or project_name == "(新建项目)":
-                return "❌ 请输入有效的项目名称", gr.update()
+                empty_btns = [gr.update(interactive=True)] + [gr.update(interactive=False)] * 6
+                return ("❌ 请输入有效的项目名称", gr.update(), "", "就绪", 0, [],
+                        gr.Dropdown(choices=[], value=None), "", gr.update(), gr.update(),
+                        _render_stage_status([], "standard"), *empty_btns)
             try:
                 project_path = Path(working_dir) / project_name
                 if create_project_structure(project_path, mode, int(freq_val)):
@@ -1170,15 +1173,28 @@ def create_ui() -> gr.Blocks:
                     c["working_dir"] = working_dir
                     c["last_project"] = project_name
                     save_config(c)
-                    return f"✅ 项目 '{project_name}' 创建成功！", gr.Dropdown(choices=["(新建项目)"] + projects, value=project_name)
-                return "❌ 创建项目结构失败", gr.update()
+                    # 调用 on_project_select 逻辑来更新所有 UI 组件
+                    project_ui = on_project_select(working_dir, project_name)
+                    return (f"✅ 项目 '{project_name}' 创建成功！",
+                            gr.Dropdown(choices=["(新建项目)"] + projects, value=project_name),
+                            *project_ui)
+                empty_btns = [gr.update(interactive=True)] + [gr.update(interactive=False)] * 6
+                return ("❌ 创建项目结构失败", gr.update(), "", "就绪", 0, [],
+                        gr.Dropdown(choices=[], value=None), "", gr.update(), gr.update(),
+                        _render_stage_status([], "standard"), *empty_btns)
             except Exception as e:
-                return f"❌ 创建失败: {str(e)}", gr.update()
+                empty_btns = [gr.update(interactive=True)] + [gr.update(interactive=False)] * 6
+                return (f"❌ 创建失败: {str(e)}", gr.update(), "", "就绪", 0, [],
+                        gr.Dropdown(choices=[], value=None), "", gr.update(), gr.update(),
+                        _render_stage_status([], "standard"), *empty_btns)
 
         create_btn.click(
             fn=create_project,
             inputs=[working_dir_input, new_project_name, mode_dropdown, target_freq],
-            outputs=[project_status, project_dropdown]
+            outputs=[project_status, project_dropdown, log_output, current_stage, progress_bar,
+                     file_list, file_selector, requirement_text, mode_dropdown, run_mode_display,
+                     stage_status_html, stage1_btn, stage15_btn, stage2_btn, stage3_btn,
+                     stage35_btn, stage4_btn, stage5_btn]
         )
 
         # ======================================================================
@@ -2164,7 +2180,9 @@ def create_ui() -> gr.Blocks:
             demo.load(
                 fn=on_project_select,
                 inputs=[working_dir_input, project_dropdown],
-                outputs=[log_output, current_stage, progress_bar, file_list, file_selector, requirement_text]
+                outputs=[log_output, current_stage, progress_bar, file_list, file_selector, requirement_text,
+                         mode_dropdown, run_mode_display, stage_status_html,
+                         stage1_btn, stage15_btn, stage2_btn, stage3_btn, stage35_btn, stage4_btn, stage5_btn]
             )
 
     return demo

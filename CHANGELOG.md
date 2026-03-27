@@ -1,5 +1,40 @@
 # VeriFlow Changelog
 
+## v8.3.2 - 2026-03-27 - 工具层质量加固（基于 test-uart-16558 分析）
+
+### 问题背景
+通过对 `test-uart-16558` 项目产出物和日志的分析，识别出 5 项工具层面的系统性缺陷并逐一修复。
+
+### 修复内容
+
+#### Fix 1 — `prompts/supervisor.md`：全局模式扫描规则
+- 在 Decision Rules 后、Output Format 前新增 **Code Fix Rules** 强制章节
+- 修复 RTL 代码模式问题时，必须扫描 `workspace/rtl/` 下**所有文件**的同类模式并全部修复
+- 适用场景：`always @*` 读取数组、不完整 case/if、Latch 推断等
+- 将所有修复文件列入 `modules` 字段，避免单文件修复导致下次 retry 仍然崩溃
+
+#### Fix 2 — `veriflow_ctl.py` (stage1_architect)：目标频率注入
+- 读取 `project_config.json::target_frequency_mhz`，注入 Stage 1 kickoff 内容
+- 在 AUTOSTART header 后、stage1_architect.md 内容前插入频率约束段
+- 包含 `critical_path_budget` 的计算公式（`floor(1000/freq/0.1)`），确保 spec.json 频率与 project_config 一致
+
+#### Fix 3 — `veriflow_ctl.py` (cmd_validate)：频率一致性校验
+- Stage 1 validate 新增频率一致性检查
+- 比较 `spec.json::target_frequency_mhz`（或 `target_kpis::frequency_mhz`）与 `project_config.json::target_frequency_mhz`
+- 不一致时报 `FREQ_MISMATCH` 错误，阻止 stage 完成
+
+#### Fix 4 — `prompts/stage35_skill_d.md`：静态分析质量提升
+- 强制要求 `analyzed_files` 列出所有已读文件，不得遗漏
+- 新增 FIFO/RAM cell 估算规则：Distributed RAM FIFO（depth×width cells）、Block RAM FIFO（~0 logic cells）
+- 输出 summary 增加文件列表，便于审计
+
+#### Fix 5 — `prompts/stage2_timing.md`：测试台质量加固
+- TB 要求新增第 8 条：串行/波特率设计必须按公式计算等待周期（`divisor × oversampling × frame_bits`），禁止硬编码小常数
+- TB 要求新增第 9 条：每个写数据场景必须有读回断言，纯 `$display` 不构成断言
+- 新增 **Baud-rate wait pattern** 代码示例
+
+---
+
 ## v8.3.1 - 2026-03-24 - 代码质量优化 + verilog_flow 支持库接入
 
 ### 接入 verilog_flow/ 支持库

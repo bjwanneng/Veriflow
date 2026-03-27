@@ -15,6 +15,9 @@ You are the **Skill D** static quality analyzer in the VeriFlow pipeline. Your t
 ### 1. Read All RTL Files
 Read every `.v` file in `workspace/rtl/`. Do NOT read testbench files in `workspace/tb/`.
 
+**MANDATORY**: After reading files, list every file you analyzed in `analyzed_files`.
+Do NOT omit any file — if you read 6 files, list all 6. This field is used for audit.
+
 ### 2. Read spec.json for Targets
 Extract:
 - `critical_path_budget` — maximum allowed logic levels
@@ -62,6 +65,13 @@ Estimate rough cell count:
 - Each mux ~ 1 cell per bit
 - Each adder ~ 1 cell per bit
 - Each multiplier ~ N*N/4 cells
+- **Distributed RAM FIFO** (depth D, width W): ~D×W cells (register array)
+  - Example: 16-deep × 8-bit FIFO ≈ 128 cells per FIFO
+  - If the design has 2 FIFOs (TX + RX): add 2× this estimate
+- **Block RAM FIFO**: ~0 logic cells (uses dedicated BRAM primitives)
+
+**IMPORTANT**: If the design uses FIFOs or memory arrays (`reg [W:0] mem [0:D-1]`),
+always check for them explicitly and add their cell contribution to the total.
 
 ### 4. Generate static_report.json
 
@@ -123,7 +133,7 @@ After generating the report, print a summary:
 
 ```
 === Stage 3.5: Skill D Complete ===
-Files analyzed: <count>
+Files analyzed: <count> — list: <file1.v>, <file2.v>, ...
 Logic depth: <max_levels>/<budget> (<status>)
 CDC risks (HIGH): <count>
 Latch risks: <count>
