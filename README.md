@@ -302,28 +302,121 @@ my_project/
 
 ## 质量门控策略
 
-检测到违规时，流水线暂停并询问用户；决策记录入 `pipeline_state.json` 供审计。
+VeriFlow 有两类门控机制，行为不同：
 
-| 触发条件 | 门控位置 |
+- **硬校验（validate）**：由 Claude 在 REPL 中自调用，输出 `VALIDATE: FAIL` 则 Claude 必须修正后重新 validate，Stage 不会完成
+- **软门控（用户确认）**：流水线暂停，终端询问用户如何处置，选择 B/Q 则触发 Supervisor 重新路由
+
+### Stage 1 — 架构规格硬校验
+
+由 `validate --stage 1` 执行，**全部通过才能写哨兵文件**：
+
+| 检查项 | 错误代码 | 说明 |
+|--------|---------|------|
+| `spec.json` 存在 | `MISSING` | 文件不存在则直接失败 |
+| `modules` 数组非空 | `INVALID` | 必须定义至少一个模块 |
+| 存在 `module_type: top` 的模块 | `INVALID` | 必须有顶层模块 |
+| `target_kpis` 包含 `frequency_mhz`、`max_cells`、`power_mw` | `INVALID` | 三个 KPI 字段缺一不可 |
+| `spec.json` 频率与 `project_config.json` 一致 | `FREQ_MISMATCH` | 防止目标频率前后矛盾 |
+| JSON Schema 校验（需安装 `jsonschema`） | `SCHEMA` | 可选，未安装时静默跳过 |
+
+输出格式：
+```
+VALIDATE: PASS          ← 全部通过，Claude 继续执行 complete
+VALIDATE: FAIL
+  ERROR: FREQ_MISMATCH: spec.json target_frequency_mhz=100 != project_config.json target_frequency_mhz=300
+  ERROR: INVALID: target_kpis missing 'power_mw'
+```
+
+### Stage 2 — 时序模型硬校验
+
+由 `validate --stage 2` 执行：
+
+| 检查项 | 说明 |
+|--------|------|
+| `workspace/docs/timing_model.yaml` 存在 | 必须生成 |
+| YAML 包含 `design` 和 `scenarios` 字段 | 结构完整性 |
+| `workspace/tb/tb_*.v` 存在 | 至少一个测试台文件 |
+
+此外 `stage2_timing_model()` 在 Claude 返回后**再次直接验证文件是否真实存在**，任一缺失即返回 False 交 Supervisor 路由。
+
+### Stage 3.5 — Skill D 双阶段门控
+
+**Phase 1 — Lint 循环（自动）：**
+- 最多 5 轮 iverilog lint，每轮失败调用 Debugger 修复
+- 第 N 轮 lint 输出写入 `linter_stage35_iterN.log`
+- 5 轮后仍失败 → 返回 False 交 Supervisor
+
+**Phase 2 — 静态分析门控（用户确认）：**
+当 LLM 分析发现以下问题时，终端弹出交互提示：
+
+| 触发条件 | 严重程度 |
 |---------|---------|
-| `spec.json` 缺少 `target_kpis` | Stage 1 validate |
-| `spec.json` 频率与 `project_config.json` 不一致 | Stage 1 validate |
-| `timing_model.yaml` 字段不完整 | Stage 2 validate |
-| 逻辑深度超过 `critical_path_budget` | Stage 3.5 |
-| CDC 风险等级为 HIGH | Stage 3.5 |
-| 仿真失败超过 max_iterations | Stage 4 |
-| KPI 缺口 > 20% | Stage 5 |
+| 逻辑深度 `max_levels > critical_path_budget` | 时序风险，可能无法满足目标频率 |
+| CDC 风险等级为 `HIGH` | 跨时钟域亚稳态风险 |
 
-### validate / complete 子命令
+提示格式：
+```
+⚠️  WARNING: Skill D detected quality violations:
+    - Logic depth 18 exceeds budget 10
+    - CDC risk HIGH: rx_data used in clk_sys domain
+
+  Recommendation: Add synchronizer FFs for rx_data crossing
+
+  Choose: [C]ontinue  [B]ack to Stage 1  [Q]uit
+```
+
+| 选择 | 行为 |
+|------|------|
+| `C`（回车） | 忽略违规，继续执行 Stage 4 |
+| `B` 或 `Q` | 抛出 `RuntimeError("skill_d_gate_rejected")` → Supervisor 路由 |
+
+### Stage 4 — 仿真自动修复循环
+
+**自动阶段（无需用户干预）：**
+- 最多 **5 轮** iverilog 编译 + vvp 仿真
+- 每轮失败时调用 Debugger，Debugger 获得 `timing_model.yaml` 上下文有依据地修复 RTL
+- TB 防篡改：每次 Debugger 调用前后对 `workspace/tb/` 做 MD5 快照，若测试台被修改则**自动还原**并打印警告
+- 无测试台（`tb_*.v` 不存在）：跳过循环直接返回 False
+
+**超限后（Supervisor 接管）：**
+- 5 轮后仍失败 → 返回 False，流水线调用 Supervisor 决策路由
+
+### Stage 5 — KPI Dashboard 门控
+
+综合完成后打印 KPI 对比看板，当面积超出 `target_kpis.max_cells` 超过 **20%** 时弹出提示：
+
+```
+──────────────────────────────────────────────────────────
+  KPI Dashboard
+──────────────────────────────────────────────────────────
+  Cells: 6200
+  Target Freq:  300 MHz  (STA requires dedicated tool)
+  Area:  6200 / 5000 cells (124%) ✗ OVER
+
+  ⚠️  Area exceeds target by 24% — consider revising Stage 1
+
+  Choose: [C]ontinue  [B]ack to Stage 1  [Q]uit
+──────────────────────────────────────────────────────────
+```
+
+| 选择 | 行为 |
+|------|------|
+| `C`（回车） | 接受结果，流水线正常结束 |
+| `B` 或 `Q` | `sys.exit(1)`（已知问题：尚未接入 Supervisor 路由） |
+
+> **注意**：频率 KPI 需要 STA 工具（如 OpenSTA）才能精确验证，Yosys 仅输出门级网表，VeriFlow 当前不做频率达成判定。
+
+### validate / complete 子命令说明
 
 这两个子命令主要供 **Claude 在 REPL 模式下自调用**，用于哨兵文件握手协议：
 
-| 命令 | 作用 |
-|------|------|
-| `validate --stage 1` | 检查 `spec.json` 字段完整性、target_kpis、频率一致性 |
-| `complete --stage 1` | 写入 `workspace/docs/stage1.done`（含 MD5 校验和） |
-| `validate --stage 2` | 检查 `timing_model.yaml` + `tb_*.v` 存在性 |
-| `complete --stage 2` | 写入 `workspace/docs/stage2.done` |
+| 命令 | 输出 | 作用 |
+|------|------|------|
+| `validate --stage 1` | `VALIDATE: PASS / FAIL` | 检查 spec.json 字段完整性、target_kpis、频率一致性 |
+| `complete --stage 1` | `COMPLETE: OK` | 写入 `workspace/docs/stage1.done`（含 MD5 校验和） |
+| `validate --stage 2` | `VALIDATE: PASS / FAIL` | 检查 timing_model.yaml + tb_*.v 存在性 |
+| `complete --stage 2` | `COMPLETE: OK` | 写入 `workspace/docs/stage2.done` |
 
 ---
 
