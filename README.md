@@ -1,4 +1,4 @@
-# VeriFlow 8.3
+# VeriFlow 8.3.2
 
 工业级 Verilog RTL 设计流水线 —— 控制权反转架构 (Control Flow Inversion)
 
@@ -184,6 +184,7 @@ my_project/
 | 触发条件 | 门控位置 |
 |---------|---------|
 | spec.json 缺少 target_kpis | Stage 1 validate |
+| spec.json 频率与 project_config.json 不一致 | Stage 1 validate |
 | timing_model.yaml 字段不完整 | Stage 2 validate |
 | 逻辑深度超过 critical_path_budget | Stage 3.5 |
 | CDC 风险等级为 HIGH | Stage 3.5 |
@@ -200,6 +201,16 @@ my_project/
 | Yosys | 综合（Enterprise） | 否 |
 
 ## 更新日志
+
+### v8.3.2 (2026-03-27) — 工具层质量加固
+
+基于 `test-uart-16558` 项目的分析，修复 5 项工具层系统性缺陷：
+
+- **Supervisor 全局扫描**：修复 RTL 代码模式时，必须扫描 `workspace/rtl/` 下所有文件的同类模式并全部修复，避免单文件修复导致下次 retry 仍然崩溃
+- **目标频率注入**：Stage 1 kickoff 自动从 `project_config.json` 读取 `target_frequency_mhz` 并注入 prompt，含 `critical_path_budget` 计算公式
+- **频率一致性校验**：`validate --stage 1` 新增 `FREQ_MISMATCH` 检查，`spec.json` 频率必须与 `project_config.json` 一致
+- **Skill D 分析完整性**：`analyzed_files` 强制列出所有已读文件；新增 FIFO/RAM cell 估算规则（Distributed RAM: depth×width cells）
+- **测试台质量**：TB 要求波特率等待周期按公式计算（`divisor × oversampling × frame_bits`），每个写数据场景必须有读回断言
 
 ### v8.4.1 (2026-03-26) — 日志系统全面优化
 - **修复 O(N²) 性能瓶颈**：GUI `emit()` 改用 `deque(maxlen=2000)` 环形缓冲，`join` 从 O(N) 降为 O(2000)
@@ -244,4 +255,4 @@ MIT License — 详见 LICENSE 文件
 
 ---
 
-**版本**: 8.4.1 | **更新日期**: 2026-03-26
+**版本**: 8.3.2 | **更新日期**: 2026-03-27
