@@ -4,85 +4,149 @@
 
 ## 核心架构
 
-VeriFlow 8.3 采用**控制权反转**架构：Python 作为主控状态机，LLM 作为 Worker 节点。
+VeriFlow 采用**控制权反转**架构：Python 是唯一的主控状态机，Claude LLM 作为无状态 Worker 节点被 Python 按需调用，EDA 工具（iverilog、Yosys）由 Python 直接驱动。
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                      Python Controller                            │
-│                   (veriflow_ctl.py — Master)                      │
-├──────────┬──────────┬──────────┬──────────┬──────────┬──────────┤
-│ Stage 1  │ Stage 2  │Stage 2.5 │ Stage 3  │Stage 3.5 │ Stage 4  │
-│Architect │ Timing   │  Human   │  Coder   │ Skill D  │  Debug   │
-│(REPL交互)│  Model   │   Gate   │  (RTL)   │ (静态分析)│ (仿真循环)│
-└──────────┴──────────┴──────────┴──────────┴──────────┴──────────┘
-                                                    │
-                                          ┌─────────▼─────────┐
-                                          │    EDA Tools       │
-                                          │  iverilog / Yosys  │
-                                          └───────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                   Python Controller (veriflow_ctl.py)                │
+│                      Master State Machine                            │
+│                                                                      │
+│  ┌──────┐  ┌──────┐  ┌──────┐  ┌──────┐  ┌──────┐  ┌──────┐       │
+│  │ S1   │  │ S1.5 │  │ S2   │  │ S3   │  │ S3.5 │  │ S4   │  ...  │
+│  │Arch  │  │Micro │  │Timing│  │Coder │  │SkillD│  │ Sim  │       │
+│  │(REPL)│  │Arch  │  │Model │  │(RTL) │  │(静态)│  │ Loop │       │
+│  └──────┘  └──────┘  └──────┘  └──────┘  └──────┘  └──────┘       │
+│                                                                      │
+│           ↕ Stage 失败时调用                                          │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │              Supervisor (prompts/supervisor.md)               │   │
+│  │   分析失败原因 → 输出路由决策 JSON → 决定 retry / escalate      │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────┘
+               ↕ Lint / Simulation
+    ┌────────────────────────────┐
+    │   EDA Tools                │
+    │   iverilog + vvp / Yosys   │
+    └────────────────────────────┘
 ```
 
-## 执行模式
+### Supervisor 机制
+
+每当某个 Stage 返回失败，Python 不直接 abort，而是调用 **Supervisor**：
+
+1. Python 将失败上下文（失败 stage、错误摘要、spec 摘要、历史失败案例）注入 `prompts/supervisor.md`
+2. Supervisor LLM 分析根因，输出严格 JSON 路由决策：
+
+```json
+{
+  "action": "retry_stage",
+  "target_stage": 3,
+  "modules": ["uart_rx"],
+  "hint": "Replace always @* array read with wire continuous assign",
+  "root_cause": "Combinational loop due to array read in always @* block",
+  "severity": "high"
+}
+```
+
+3. Python 按决策路由：
+
+| `action` | 行为 |
+|----------|------|
+| `retry_stage` | 跳回指定 stage 重试，携带 hint |
+| `escalate_stage` | 跳回更早 stage 重新生成 |
+| `continue` | 忽略失败，继续下一 stage |
+| `abort` | 终止流水线 |
+
+- 每个 stage 最多触发 **3 次** Supervisor 重试，超限自动 abort
+- Supervisor 的 hint 写入 `.veriflow/supervisor_hint.md`，由 Stage 3 和 Stage 4 Debugger 读取注入
+- **全局模式扫描**（v8.3.2 新增）：修复 RTL 代码模式时，Supervisor 必须扫描 `workspace/rtl/` 下所有文件的同类问题并全部修复
+
+---
+
+## 执行模式与阶段流程
+
+### 模式对应阶段
 
 | 模式 | 阶段序列 | 适用场景 |
 |------|---------|---------|
-| **Quick** | 1 → 3 → 4(lint-only) | 快速语法验证，几分钟出结果 |
-| **Standard** | 1 → 2 → 2.5 → 3 → 3.5 → 4(sim) | 完整功能验证（推荐） |
-| **Enterprise** | 1 → 2 → 2.5 → 3 → 3.5 → 4(sim) → 5 | 含综合 + KPI 比对 |
+| **Quick** | 1 → 1.5 → 3 → 3.5 | 快速语法验证，无仿真，分钟级出结果 |
+| **Standard** | 1 → 1.5 → 2 → 3 → 3.5 → 4 → 5 | 完整功能验证 + 综合（推荐） |
+| **Enterprise** | 1 → 1.5 → 2 → 3 → 3.5 → 4 → 5 | 同 Standard，保留未来扩展 |
 
-## 阶段说明
+> 内部整数编码：`1.5 → 15`，`3.5 → 35`，`3.6 → 36`
 
-### Stage 1 — Architect（交互式架构分析）
-- 以 **REPL 模式**启动 Claude，进行问答式架构拆解
-- Claude 通过提问澄清需求，生成 `workspace/docs/spec.json`
-- 完成后 Claude 调用 `validate --stage 1` + `complete --stage 1` 写入哨兵文件
-- spec.json 必须包含 `target_kpis`（频率/面积/功耗）、`pipeline_stages`、`critical_path_budget`
+### 各阶段说明
 
-### Stage 2 — Virtual Timing Model
-- 读取 spec.json，生成 `workspace/docs/timing_model.yaml`（行为断言 + 激励序列）
-- 同步生成 `workspace/tb/tb_<design>.v`（激励与 Golden Trace 同源）
-- YAML 格式直观，便于人工审查
+| 阶段 | 名称 | 模式 | 类型 | 输出 |
+|------|------|------|------|------|
+| **Stage 1** | Architect | 所有 | 交互式 REPL | `workspace/docs/spec.json` |
+| **Stage 1.5** | Micro-Architecture | 所有 | 无头 LLM | `workspace/docs/micro_arch.md` |
+| **Stage 2** | Timing Model | standard/enterprise | 无头 LLM | `workspace/docs/timing_model.yaml` + `workspace/tb/tb_*.v` |
+| **Stage 3** | RTL Coder | 所有 | 并行无头 LLM | `workspace/rtl/*.v` |
+| **Stage 3.5** | Skill D | 所有 | Lint 循环 + LLM | `workspace/docs/static_report.json` |
+| **Stage 4** | Simulation Loop | standard/enterprise | iverilog + vvp + Debugger | 仿真通过 |
+| **Stage 5** | Synthesis + KPI | standard/enterprise | Yosys | `workspace/docs/synth_report.json` |
 
-### Stage 2.5 — Human Gate（人工门控）
-- 暂停流水线，展示 timing_model.yaml 供用户审查
-- 用户确认行为规格正确后，才进入代码生成阶段
-- 防止错误的行为规格传播到后续阶段
+#### Stage 1 — Architect（交互式 REPL）
 
-### Stage 3 — RTL Coder
-- 逐模块生成 Verilog RTL，输出到 `workspace/rtl/`
-- 不生成 TB（TB 来自 Stage 2，保持激励一致性）
+- Python 将完整任务指令写入项目目录的 `CLAUDE.md`，Claude Code 启动时自动读取并开始执行
+- Claude 通过多轮问答澄清需求，生成 `workspace/docs/spec.json`
+- 完成后 Claude 调用 `validate --stage 1` → `complete --stage 1` 写入哨兵文件 `stage1.done`
+- Python 轮询 `stage1.done`，验证 MD5 校验和后继续
+- v8.3.2 新增：kickoff 自动注入 `project_config.json` 中的目标频率，并在 validate 时校验频率一致性
 
-### Stage 3.5 — Skill D（静态质量分析）
-- 读取所有 RTL 文件，进行静态分析（无需 EDA 工具）
-- 检测：逻辑深度估算、CDC 风险、Latch 推断风险
-- 输出 `workspace/docs/static_report.json`
-- 质量门控：逻辑深度超预算或 HIGH CDC 风险 → 询问用户是否继续
+#### Stage 1.5 — Micro-Architecture
 
-### Stage 4 — Simulation Loop
-- Quick 模式：仅 lint（`iverilog -Wall`）
-- Standard/Enterprise 模式：lint + 仿真（`iverilog + vvp`）
-- 仿真失败时，Debugger 获得 timing_model.yaml 上下文，有依据地修复
-- **TB 防篡改保护**：Debugger 调用前后对 `workspace/tb/` 做 MD5 快照，检测到修改自动还原
+- 无头调用，读取 `spec.json`，生成 `workspace/docs/micro_arch.md`
+- 为 Stage 3 RTL 生成提供模块级微架构指导
 
-### Stage 5 — Yosys Synthesis（Enterprise 专属）
-- 调用 Yosys 综合，解析 `stat -json` 输出
-- 对比 spec.json 中的 `target_kpis`（频率/面积/功耗）
-- 输出 `workspace/docs/synth_report.json` + 终端 KPI Dashboard
-- Yosys 未安装 → 优雅跳过，不中止流水线
+#### Stage 2 — Virtual Timing Model
+
+- 读取 `spec.json`（内容直接注入 prompt，无需 Claude 自行读取文件）
+- 生成行为断言 YAML（`timing_model.yaml`）和配套测试台（`tb_*.v`）
+- 测试台必须：至少 3 个场景（reset + basic + edge case），每个场景均有 `fail_count` 断言
+- 串行/波特率设计：必须按公式计算等待周期，禁止硬编码小常数
+
+#### Stage 3 — RTL Coder
+
+- 并行生成：Phase 1 并发生成所有非 top 模块（最多 4 个 worker），Phase 2 串行生成 top 模块
+- 遵循 7 条强制 Verilog 规则（Verilog-2005，ANSI 端口，snake_case，完整实现无 placeholder）
+- 可通过 `--modules uart_tx` 只重新生成指定模块
+- 从 ExperienceDB 查询历史成功模式，注入为 `EXPERIENCE_HINT`
+
+#### Stage 3.5 — Skill D（静态质量分析）
+
+- Phase 1：iverilog lint 循环（最多 5 轮），失败时 Debugger 自动修复
+- Phase 2：无头 LLM 分析，检测逻辑深度、CDC 风险、Latch 推断
+- v8.3.2 新增：`analyzed_files` 必须列出所有已分析文件；FIFO/RAM cell 估算（depth×width cells）
+
+#### Stage 4 — Simulation Loop
+
+- iverilog 编译 + vvp 仿真，最多 5 轮自动修复
+- **TB 防篡改保护**：Debugger 运行前后对 `workspace/tb/` 做 MD5 快照，自动还原被篡改的测试台
+- 无测试台时返回 False，Supervisor 路由回 Stage 2 重新生成
+
+#### Stage 5 — Yosys Synthesis
+
+- Yosys 综合，解析 `stat -json` 输出，与 `spec.json::target_kpis` 比对
+- KPI 缺口 >20% 时打印警告门控
+- Yosys 未安装时优雅跳过
+
+---
 
 ## 快速开始
 
 ### 前置条件
 
-- Python 3.8+
-- Icarus Verilog（`iverilog` 和 `vvp`）
-- Claude CLI（`claude` 命令可用）
-- （Enterprise 模式）Yosys
-
-### 安装 EDA 工具
+| 工具 | 用途 | 必需 |
+|------|------|------|
+| Python 3.8+ | 主控脚本 | 是 |
+| Claude CLI（`claude` 命令） | LLM Worker | 是 |
+| iverilog + vvp | Lint + 仿真 | 是（未安装自动 mock） |
+| Yosys | 综合（Stage 5） | 否（未安装自动跳过） |
 
 ```bash
-# 推荐：使用 oss-cad-suite（含 iverilog + Yosys）
+# 推荐：oss-cad-suite（含 iverilog + Yosys）
 # 下载：https://github.com/YosysHQ/oss-cad-suite-build/releases
 export PATH="/path/to/oss-cad-suite/bin:$PATH"
 
@@ -91,167 +155,245 @@ export PATH="/path/to/oss-cad-suite/bin:$PATH"
 # Ubuntu: apt-get install iverilog
 ```
 
-### 使用
+### 启动方式
+
+#### 方式 1 — GUI 启动（推荐）
+
+**Windows（双击即可）：**
+```
+run_veriflow.bat
+```
+脚本内容：进入项目目录 → 启动 `run_veriflow.py` → 出错时暂停等待查看
+
+**跨平台 Python 启动器：**
+```bash
+python run_veriflow.py
+```
+- 自动在 7860–7900 范围内寻找空闲端口
+- 等待 Gradio 服务就绪后自动打开浏览器
+- Ctrl+C 优雅退出
+
+**macOS / Linux：**
+```bash
+chmod +x run_veriflow.sh
+./run_veriflow.sh
+```
+
+**不自动打开浏览器：**
+```bash
+python veriflow_gui.py
+```
+
+#### 方式 2 — 命令行直接运行
 
 ```bash
-# 1. 创建项目目录并写需求
-mkdir my_project
-cat > my_project/requirement.md << 'EOF'
-# UART TX 发送器
+# 标准模式（完整验证，推荐）
+python veriflow_ctl.py run --mode standard -d ./my_project
 
-设计一个 UART 发送器：
-- 波特率：115200
+# Quick 模式（仅 lint，无仿真，快速验证）
+python veriflow_ctl.py run --mode quick -d ./my_project
+
+# Enterprise 模式（含综合 + KPI 比对）
+python veriflow_ctl.py run --mode enterprise -d ./my_project
+
+# 断点续跑（跳过已完成的 stage）
+python veriflow_ctl.py run --mode standard -d ./my_project --resume
+
+# 带反馈修订
+python veriflow_ctl.py run --mode standard -d ./my_project --feedback feedback.md
+
+# 只重新生成某个模块
+python veriflow_ctl.py run --mode standard -d ./my_project --stages 3 --modules uart_tx
+
+# 验证阶段输出（由 Claude 在 REPL 中自调用）
+python veriflow_ctl.py validate --stage 1 -d ./my_project
+
+# 标记阶段完成（由 Claude 在 REPL 中自调用，需先通过 validate）
+python veriflow_ctl.py complete --stage 1 -d ./my_project
+```
+
+### 第一个项目
+
+```bash
+# 1. 创建项目目录，写入需求文件
+mkdir my_uart
+cat > my_uart/requirement.md << 'EOF'
+# UART 收发器
+
+设计一个 UART 收发器：
+- 波特率：115200（可配置）
 - 数据位：8位，无校验，1停止位
 - 接口：valid/ready 握手
 - 目标频率：100 MHz
 EOF
 
-# 2. 运行流水线（Quick 模式，快速验证）
-python veriflow_ctl.py run --mode quick -d ./my_project
+# 2. 用 GUI 启动（推荐）
+python run_veriflow.py
 
-# 3. 运行流水线（Standard 模式，完整验证）
-python veriflow_ctl.py run --mode standard -d ./my_project
-
-# 4. 运行流水线（Enterprise 模式，含综合）
-python veriflow_ctl.py run --mode enterprise -d ./my_project
+# 或命令行运行
+python veriflow_ctl.py run --mode standard -d ./my_uart
 ```
 
-## 命令参考
+---
 
-```bash
-# 运行流水线
-python veriflow_ctl.py run --mode {quick,standard,enterprise} -d <项目目录>
+## GUI 说明
 
-# 验证指定阶段输出（由 Claude 在 REPL 中调用）
-python veriflow_ctl.py validate --stage <N> -d <项目目录>
+Gradio Web UI，访问地址默认为 `http://127.0.0.1:7860`（端口自动分配）。
 
-# 标记阶段完成（由 Claude 在 REPL 中调用，需先通过 validate）
-python veriflow_ctl.py complete --stage <N> -d <项目目录>
+### 页面结构
+
+| 页面 | 功能 |
+|------|------|
+| Project Management | 创建项目、设置模式和目标频率、切换工作目录 |
+| Design Requirements | 编辑 `requirement.md`，支持文本输入、文件上传、模板库 |
+| Environment Config | 配置 iverilog/vvp/Yosys 路径，工具可用性检测 |
+| Agent Config | Claude CLI 路径、Mock 模式开关、OpenAI 兼容端点配置 |
+| Run Pipeline | Stage 状态指示器、逐 stage 运行按钮、实时彩色日志、Review Gate |
+| Generated Files | RTL / Testbench / 文档文件预览 |
+
+### Run Pipeline 页关键功能
+
+- **Stage 状态指示器**：绿圈 = 已完成，灰圈 = 待运行，实时更新
+- **逐 stage 按钮**：前级未完成时后级按钮不可点击；已完成的 stage 按钮变绿
+- **Review Gate**：Stage 1 和 Stage 3 完成后自动暂停，展示 spec.json / RTL 供审查；点"拒绝"可填写反馈，重跑该 stage
+- **日志过滤**：支持按级别过滤（info / warning / error / stage），深色终端风格彩色显示
+- **配置持久化**：模式、已完成 stages、日志状态在重新打开项目时自动恢复
+
+---
+
+## 项目目录结构
+
+```
+my_project/
+├── requirement.md              # 设计需求（用户输入）
+├── .veriflow/
+│   ├── project_config.json     # 项目配置（mode、target_frequency_mhz 等）
+│   ├── pipeline_state.json     # 流水线状态（completed_stages、决策记录）
+│   ├── pipeline_events.jsonl   # Stage 生命周期事件流（start/complete/fail）
+│   ├── supervisor_hint.md      # Supervisor 路由 hint（Stage 失败时写入，下次 Stage 读取后删除）
+│   ├── kpi.json                # KPI 指标（每次运行记录）
+│   ├── experience_db/          # 历史成功模式 + 失败案例（ExperienceDB）
+│   └── logs/
+│       ├── stage1_YYYYMMDDHHMMSS.jsonl   # Stage 1 结构化日志
+│       ├── stage3_YYYYMMDDHHMMSS.jsonl   # Stage 3 结构化日志
+│       ├── linter_stage3.log             # Stage 3 validate lint 输出
+│       ├── linter_stage35_iter1.log      # Stage 3.5 第 1 轮 lint 输出
+│       ├── linter_stage4.log             # Stage 4 validate lint 输出
+│       └── run_<ts>.log                  # 全量纯文本日志（最近 10 个，自动清理）
+└── workspace/
+    ├── docs/
+    │   ├── spec.json               # 架构规格（Stage 1 输出）
+    │   ├── micro_arch.md           # 微架构文档（Stage 1.5 输出）
+    │   ├── timing_model.yaml       # 行为断言 + 激励序列（Stage 2 输出）
+    │   ├── static_report.json      # 静态分析报告（Stage 3.5 输出）
+    │   ├── synth_report.json       # 综合报告（Stage 5 输出）
+    │   └── stage*.done             # 阶段完成哨兵文件（含 MD5 校验和）
+    ├── rtl/
+    │   └── *.v                     # RTL 源文件（Stage 3 输出）
+    ├── tb/
+    │   └── tb_*.v                  # 测试台（Stage 2 输出，防篡改保护）
+    ├── sim/
+    │   └── *                       # 仿真输出（VCD、日志）
+    └── stages/
+        └── <stage_name>/           # 每个 stage 的扁平归档（只保存新增/修改文件）
 ```
 
-### validate / complete 说明
+---
+
+## 质量门控策略
+
+检测到违规时，流水线暂停并询问用户；决策记录入 `pipeline_state.json` 供审计。
+
+| 触发条件 | 门控位置 |
+|---------|---------|
+| `spec.json` 缺少 `target_kpis` | Stage 1 validate |
+| `spec.json` 频率与 `project_config.json` 不一致 | Stage 1 validate |
+| `timing_model.yaml` 字段不完整 | Stage 2 validate |
+| 逻辑深度超过 `critical_path_budget` | Stage 3.5 |
+| CDC 风险等级为 HIGH | Stage 3.5 |
+| 仿真失败超过 max_iterations | Stage 4 |
+| KPI 缺口 > 20% | Stage 5 |
+
+### validate / complete 子命令
 
 这两个子命令主要供 **Claude 在 REPL 模式下自调用**，用于哨兵文件握手协议：
 
 | 命令 | 作用 |
 |------|------|
-| `validate --stage 1` | 检查 spec.json 字段完整性（含 target_kpis） |
+| `validate --stage 1` | 检查 `spec.json` 字段完整性、target_kpis、频率一致性 |
 | `complete --stage 1` | 写入 `workspace/docs/stage1.done`（含 MD5 校验和） |
-| `validate --stage 2` | 检查 timing_model.yaml + tb_*.v 存在性 |
+| `validate --stage 2` | 检查 `timing_model.yaml` + `tb_*.v` 存在性 |
 | `complete --stage 2` | 写入 `workspace/docs/stage2.done` |
 
-## 项目结构
+---
+
+## 支持库
 
 ```
-my_project/
-├── requirement.md              # 设计需求（输入）
-├── .veriflow/
-│   ├── project_config.json     # 项目配置
-│   ├── pipeline_state.json     # 流水线状态（含各阶段决策记录）
-│   ├── pipeline_events.jsonl   # 阶段级结构化事件流（start/complete/fail）
-│   ├── kpi.json                # KPI 指标（每次运行）
-│   └── logs/
-│       ├── run_<ts>.log        # 全量纯文本日志（最近 10 个，自动清理）
-│       ├── run_<ts>.jsonl      # 结构化 JSONL 日志（每条 _log() 调用一行）
-│       └── linter_iter_<N>.log # 每轮 lint 的原始输出（Stage 3.5）
-└── workspace/
-    ├── docs/
-    │   ├── spec.json           # 当前架构规格（Stage 1 输出）
-    │   ├── micro_arch.md       # 当前微架构文档（Stage 1.5 输出）
-    │   ├── timing_model.yaml   # 当前行为断言 + 激励（Stage 2 输出）
-    │   ├── static_report.json  # 当前静态分析报告（Stage 3.5 输出）
-    │   ├── synth_report.json   # 当前综合报告（Stage 5 输出）
-    │   └── stage*.done         # 阶段完成哨兵文件
-    ├── rtl/
-    │   └── *.v                 # 当前 RTL 源文件
-    ├── tb/
-    │   └── tb_*.v              # 当前测试台
-    ├── sim/
-    │   └── *                   # 当前仿真输出
-    └── stages/
-        └── <stage_name>/
-            # 每个 stage 的扁平归档目录，只保存该 stage 新增或修改的文件
+verilog_flow/
+├── common/
+│   ├── kpi.py              # KPITracker：记录每 stage 耗时和成功率，写入 kpi.json
+│   └── experience_db.py    # ExperienceDB：历史成功模式查询（Stage 3）+ 失败案例（Supervisor）
+└── defaults/
+    ├── project_templates.json          # 三种模式的完整配置
+    ├── coding_style/generic/           # Verilog 风格指南（注入 Stage 3）
+    ├── templates/generic/              # Verilog 模块模板（FIFO、CDC、FSM 等）
+    └── stage1/schemas/arch_spec_v2.json  # spec.json JSON Schema 校验
 ```
 
-## 质量门控策略
-
-检测到违规时，不自动回退，而是：
-
-1. 打印详细违规原因
-2. 询问用户：`[C]ontinue anyway / [B]ack to stage X / [Q]uit`
-3. 记录决策到 `pipeline_state.json`（用于后续审计）
-
-| 触发条件 | 门控位置 |
-|---------|---------|
-| spec.json 缺少 target_kpis | Stage 1 validate |
-| spec.json 频率与 project_config.json 不一致 | Stage 1 validate |
-| timing_model.yaml 字段不完整 | Stage 2 validate |
-| 逻辑深度超过 critical_path_budget | Stage 3.5 |
-| CDC 风险等级为 HIGH | Stage 3.5 |
-| 仿真失败超过 max_iterations | Stage 4 |
-| KPI 缺口 > 20% | Stage 5 |
-
-## 依赖要求
-
-| 工具 | 用途 | 必需 |
-|------|------|------|
-| Python 3.8+ | 主控脚本 | 是 |
-| Claude CLI | LLM Worker | 是 |
-| iverilog / vvp | Lint + 仿真 | 是 |
-| Yosys | 综合（Enterprise） | 否 |
+---
 
 ## 更新日志
 
 ### v8.3.2 (2026-03-27) — 工具层质量加固
 
-基于 `test-uart-16558` 项目的分析，修复 5 项工具层系统性缺陷：
+基于 `test-uart-16558` 项目分析，修复 5 项系统性缺陷：
 
-- **Supervisor 全局扫描**：修复 RTL 代码模式时，必须扫描 `workspace/rtl/` 下所有文件的同类模式并全部修复，避免单文件修复导致下次 retry 仍然崩溃
-- **目标频率注入**：Stage 1 kickoff 自动从 `project_config.json` 读取 `target_frequency_mhz` 并注入 prompt，含 `critical_path_budget` 计算公式
-- **频率一致性校验**：`validate --stage 1` 新增 `FREQ_MISMATCH` 检查，`spec.json` 频率必须与 `project_config.json` 一致
-- **Skill D 分析完整性**：`analyzed_files` 强制列出所有已读文件；新增 FIFO/RAM cell 估算规则（Distributed RAM: depth×width cells）
-- **测试台质量**：TB 要求波特率等待周期按公式计算（`divisor × oversampling × frame_bits`），每个写数据场景必须有读回断言
-
-### v8.4.1 (2026-03-26) — 日志系统全面优化
-- **修复 O(N²) 性能瓶颈**：GUI `emit()` 改用 `deque(maxlen=2000)` 环形缓冲，`join` 从 O(N) 降为 O(2000)
-- **单文件句柄**：`emit()` 不再每行 open/close，改为行缓冲持久句柄，大幅减少 syscall
-- **跨 run 污染修复**：`run_project()` 开头调用 `clear_error_logs()`，Supervisor 不再读到上次运行的错误
-- **per-iteration lint 日志**：`run_lint()` 新增 `log_name` 参数；Stage 3.5 每轮写 `linter_iter_N.log`，便于对比修复效果
-- **结构化 JSONL 日志**：每条 `_log()` 调用同步追加到 `run_<ts>.jsonl`
-- **阶段事件流**：`_emit_stage_event()` 写 `pipeline_events.jsonl`（stage_start / stage_complete / stage_fail）
-- **日志轮转**：`run_*.log` 最多保留 10 个，旧文件自动清理
-- **stop 写磁盘**：`stop_pipeline()` 终止记录写入磁盘日志
-- **日志过滤器激活**：GUI `log_filter` Dropdown 现已绑定 `_filter_logs()` 事件
-- **消除重复定义**：`LOG_ICONS` 常量提取为模块级，`_log()` 和 `add_log()` 共用
+- **Supervisor 全局扫描**：修复 RTL 模式问题时，必须扫描所有文件的同类模式并全部修复
+- **目标频率注入**：Stage 1 kickoff 从 `project_config.json` 读取频率并注入 prompt
+- **频率一致性校验**：`validate --stage 1` 新增 `FREQ_MISMATCH` 检查
+- **Skill D 分析完整性**：`analyzed_files` 强制列出所有文件；新增 FIFO/RAM cell 估算规则
+- **测试台质量**：波特率等待周期必须按公式计算；写数据场景必须有读回断言
 
 ### v8.3.1 (2026-03-24) — 代码质量优化
-- **接入 `verilog_flow/` 支持库**：之前定义了但未使用，现已全部接入
-  - `project_templates.json` 驱动模式配置（MODE_STAGES 不再硬编码）
-  - `coding_style/` + `templates/` 注入 Stage 3 prompt，提升代码生成质量
-  - `arch_spec_v2.json` 用于 Stage 1 spec.json schema 校验
-  - `kpi.py` 在 pipeline 开始/结束时记录 metrics，持久化至 `.veriflow/kpi.json`
-- **新增 `--resume` 标志**：断点续跑，跳过已完成的 stage
-- **Stage 2 支持 `--feedback`**：与 Stage 1/3 保持一致
-- **`cmd_validate` 补全**：Stage 2 增加 YAML 内容校验；支持 Stage 2.5/5
-- **Bug 修复**：`sys.exit()` 绕过 pipeline 状态保存问题；非 Windows 文件句柄泄漏
-- **清理冗余**：删除未使用的 legacy prompt 文件、统一延迟 import
+
+- 接入 `verilog_flow/` 支持库（kpi.py、experience_db.py、project_templates.json、coding_style/）
+- 新增 `--resume` 断点续跑标志
+- `cmd_validate` 补全：Stage 2 YAML 内容校验，Stage 2.5/5 支持
+- Bug 修复：`sys.exit()` 绕过状态保存、文件句柄泄漏
 
 ### v8.3.0 (2026-03-24) — 完整 5 阶段架构
-- **新增 Stage 2**：虚拟时序建模（timing_model.yaml + TB 生成）
-- **新增 Stage 3.5**：Skill D 静态质量分析（逻辑深度/CDC/Latch）
-- **新增 Stage 2.5**：人工门控（Stage 2 后暂停等待用户确认）
-- **新增 Stage 5**：Yosys 综合 + KPI 比对（Enterprise 模式）
-- **Stage 1 交互化**：REPL 模式 + 哨兵文件握手
-- **TB 防篡改保护**：Debugger 调用前后 MD5 快照
 
-### v8.2.0 (2026-03-23) — 控制权反转架构
-- Python 主控 + LLM Worker 架构
-- 三种执行模式（quick / standard / enterprise）
-- 新的 `run` 命令
+- 新增 Stage 2（Timing Model）、Stage 3.5（Skill D）、Stage 2.5（Human Gate）、Stage 5（Synthesis）
+- Stage 1 交互化：REPL 模式 + 哨兵文件握手协议
+- TB 防篡改保护：Debugger 前后 MD5 快照，自动还原
 
-## 许可证
+### v8.4.0 (2026-03-25) — Supervisor 架构
 
-MIT License — 详见 LICENSE 文件
+- 新增 Supervisor LLM 路由机制，Stage 失败不再直接 abort
+- `run_project()` 重构为 while 循环 + Supervisor 决策驱动
+- Stage 4 无 testbench 时 return False，Supervisor 路由回 Stage 2
+
+### v8.4.1 (2026-03-26) — 日志系统优化
+
+- 每 stage 独立 JSONL 日志文件，lint 日志按迭代编号
+- `pipeline_events.jsonl` 全局 stage 事件流
+- deque 环形缓冲优化 GUI 日志性能，日志轮转保留最近 10 个
+
+### v8.5.0–v8.6.0 (2026-03-26~27) — GUI 与 Stage 质量提升
+
+- GUI 日志升级为 HTML 深色终端风格，Rich 彩色显示
+- Stage 按钮状态联动（绿圈/灰圈指示器）
+- Stage 2：spec.json 内容直接注入 prompt，验证输出文件真实存在
+- Stage 3：内嵌 verilog-generator 7 条强制规则 + 4 步 workflow
+
+---
+
+## 已知限制
+
+- Stage 5 KPI 超 20% 时仍用 `sys.exit(1)`，尚未接入 Supervisor 路由
+- `jsonschema` 为可选依赖，未安装时 Stage 1 schema 校验静默跳过
+- Stage 1 等待超时（3600s）不可配置
 
 ---
 
