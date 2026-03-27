@@ -49,57 +49,6 @@ Violating any rule below is a critical error — fix before writing the file.
 
 ---
 
-## Coding Standards
-
-{{CODING_STYLE}}
-
-### Module Template
-```verilog
-`resetall
-`timescale 1ns/1ps
-`default_nettype none
-
-module {{MODULE_NAME}} #(
-    parameter DATA_WIDTH = 8
-) (
-    input  wire        clk,
-    input  wire        rst_n,
-    // ... ports from spec ...
-);
-
-localparam LP_STATE_IDLE = 2'd0;
-
-// Internal signals
-wire [7:0] w_sig;
-reg  [7:0] r_reg;
-
-// Combinational logic
-always @* begin
-    w_sig = 8'h00;
-    // ...
-end
-
-// Sequential logic
-always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        r_reg <= 8'h00;
-    end else begin
-        r_reg <= w_sig;
-    end
-end
-
-assign o_data = r_reg;
-
-endmodule
-`resetall
-```
-
-## Reference Templates
-
-{{VERILOG_TEMPLATES}}
-
----
-
 ## Generation Workflow
 
 ### Step 1 — Interface Derivation

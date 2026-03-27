@@ -1426,19 +1426,6 @@ def stage3_coder(project_dir: Path, mode: str,
     if modules_filter:
         modules = [m for m in modules if m.get("name") in modules_filter]
 
-    style_dir = SKILL_DIR / "verilog_flow" / "defaults" / "coding_style" / "generic"
-    coding_style = ""
-    if style_dir.exists():
-        for f in sorted(style_dir.glob("*.md")):
-            coding_style += f.read_text(encoding="utf-8") + "\n\n"
-
-    tmpl_dir = SKILL_DIR / "verilog_flow" / "defaults" / "templates" / "generic"
-    verilog_templates = ""
-    if tmpl_dir.exists():
-        for f in sorted(tmpl_dir.glob("*.v")):
-            verilog_templates += f"// === {f.name} ===\n"
-            verilog_templates += f.read_text(encoding="utf-8") + "\n\n"
-
     micro_arch = ""
     micro_arch_path = paths["docs"] / "micro_arch.md"
     if micro_arch_path.exists():
@@ -1488,8 +1475,6 @@ def stage3_coder(project_dir: Path, mode: str,
             "MICRO_ARCH":       micro_arch,
             "PEER_INTERFACES":  peer_summary,
             "USER_FEEDBACK":    user_feedback,
-            "CODING_STYLE":     coding_style,
-            "VERILOG_TEMPLATES": verilog_templates,
             "EXPERIENCE_HINT":  experience_hints.get(name, ""),
             "SUPERVISOR_HINT":  supervisor_hint,
         }
