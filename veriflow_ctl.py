@@ -1828,13 +1828,10 @@ def stage2_timing_model(project_dir: Path, mode: str) -> bool:
     paths["tb"].mkdir(parents=True, exist_ok=True)
     paths["docs"].mkdir(parents=True, exist_ok=True)
 
-    spec_json = paths["spec"].read_text(encoding="utf-8")
-
     context: Dict[str, str] = {
         "PROJECT_DIR": str(project_dir),
         "MODE":        mode,
         "STAGE_NAME":  "stage2_timing",
-        "SPEC_JSON":   spec_json,
     }
 
     success, _ = call_claude(PROMPTS_DIR / "stage2_timing.md", context)
