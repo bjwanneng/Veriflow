@@ -91,6 +91,45 @@ def get_project_paths(project_dir: Path) -> Dict[str, Path]:
         "requirement": project_dir / "requirement.md",
     }
 
+def _cleanup_stage_files(project_dir: Path, stage_num: int) -> None:
+    """
+    Clean up old files for a given stage before running it.
+    stage_num: 15, 2, 3, 35, 5
+    """
+    paths = get_project_paths(project_dir)
+    if stage_num == 15:
+        # Stage 1.5: cleanup micro_arch.md
+        micro_arch_path = paths["docs"] / "micro_arch.md"
+        if micro_arch_path.exists():
+            print(f"  [INFO] Cleaning up old file: {micro_arch_path.name}")
+            micro_arch_path.unlink()
+    elif stage_num == 2:
+        # Stage 2: cleanup timing_model.yaml and testbenches
+        timing_path = paths["docs"] / "timing_model.yaml"
+        if timing_path.exists():
+            print(f"  [INFO] Cleaning up old file: {timing_path.name}")
+            timing_path.unlink()
+        for tb_file in paths["tb"].glob("tb_*.v"):
+            print(f"  [INFO] Cleaning up old file: {tb_file.name}")
+            tb_file.unlink()
+    elif stage_num == 3:
+        # Stage 3: cleanup RTL files
+        for rtl_file in paths["rtl"].glob("*.v"):
+            print(f"  [INFO] Cleaning up old file: {rtl_file.name}")
+            rtl_file.unlink()
+    elif stage_num == 35:
+        # Stage 3.5: cleanup static report
+        report_path = paths["docs"] / "static_report.json"
+        if report_path.exists():
+            print(f"  [INFO] Cleaning up old file: {report_path.name}")
+            report_path.unlink()
+    elif stage_num == 5:
+        # Stage 5: cleanup synthesis report
+        synth_path = paths["docs"] / "synth_report.json"
+        if synth_path.exists():
+            print(f"  [INFO] Cleaning up old file: {synth_path.name}")
+            synth_path.unlink()
+
 # ── Utility Functions ───────────────────────────────────────────────────────
 def load_project_config(project_dir: Path) -> Dict:
     """Load project configuration."""
@@ -1411,6 +1450,10 @@ def stage3_coder(project_dir: Path, mode: str,
         return False
     paths["rtl"].mkdir(parents=True, exist_ok=True)
 
+    # Clean up old files unless feedback_file is provided (revision mode)
+    if not feedback_file:
+        _cleanup_stage_files(project_dir, 3)
+
     # ── Load shared resources ────────────────────────────────────────────────
     try:
         spec = json.loads(paths["spec"].read_text(encoding="utf-8"))
@@ -1788,6 +1831,9 @@ def stage15_microarch(project_dir: Path, mode: str) -> bool:
         return False
     paths["docs"].mkdir(parents=True, exist_ok=True)
 
+    # Clean up old files
+    _cleanup_stage_files(project_dir, 15)
+
     context: Dict[str, str] = {
         "PROJECT_DIR": str(project_dir),
         "MODE":        mode,
@@ -1812,6 +1858,9 @@ def stage2_timing_model(project_dir: Path, mode: str) -> bool:
         return False
     paths["tb"].mkdir(parents=True, exist_ok=True)
     paths["docs"].mkdir(parents=True, exist_ok=True)
+
+    # Clean up old files
+    _cleanup_stage_files(project_dir, 2)
 
     context: Dict[str, str] = {
         "PROJECT_DIR": str(project_dir),
@@ -1854,6 +1903,9 @@ def stage35_skill_d(project_dir: Path, mode: str) -> bool:
         _log("[Stage 3.5]", "[WARN] No RTL files found, skipping", "warning")
         return True
     paths["docs"].mkdir(parents=True, exist_ok=True)
+
+    # Clean up old files
+    _cleanup_stage_files(project_dir, 35)
 
     # Load timing model for Debugger context (if available)
     timing_model_yaml: Optional[str] = None
@@ -2016,6 +2068,9 @@ def stage5_synthesis(project_dir: Path, mode: str) -> bool:
     paths = get_project_paths(project_dir)
     rtl_dir = paths["rtl"]
     rtl_files = [f for f in rtl_dir.glob("*.v") if not f.name.startswith("tb_")]
+
+    # Clean up old files
+    _cleanup_stage_files(project_dir, 5)
 
     if not rtl_files:
         print("ERROR: No RTL files found for synthesis")
